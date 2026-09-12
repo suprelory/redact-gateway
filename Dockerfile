@@ -1,5 +1,5 @@
 # Multi-stage build for minimal final image
-FROM golang:1.22-alpine AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /app
 
