@@ -1,0 +1,121 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 14% 5%;      /* #05070C */
+    --foreground: 210 40% 98%;     /* #F8FAFC */
+
+    --card: 222 20% 7%;            /* #0A0D12 */
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222 24% 10%;        /* #0F131C */
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 199 89% 60%;        /* #38BDF8 - cyan accent */
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 217 19% 24%;      /* #1E2636 */
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217 19% 18%;          /* #161D2B */
+    --muted-foreground: 215 16% 47%; /* #64748B */
+
+    --accent: 199 89% 60%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 70%;      /* #F87171 */
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217 19% 18%;
+    --input: 217 19% 18%;
+    --ring: 199 89% 60%;
+
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'rlig' 1, 'calt' 1;
+  }
+
+  /* Fluid typography */
+  h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.1;
+  }
+
+  h2 {
+    font-size: clamp(1.5rem, 4vw, 2rem);
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    line-height: 1.2;
+  }
+
+  h3 {
+    font-size: clamp(1.25rem, 3vw, 1.5rem);
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+  }
+
+  body {
+    font-size: clamp(0.875rem, 2vw, 1rem);
+    line-height: 1.6;
+  }
+
+  code {
+    @apply font-mono text-sm bg-muted px-1.5 py-0.5 rounded;
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  @apply bg-background;
+}
+
+::-webkit-scrollbar-thumb {
+  @apply bg-muted rounded-full;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  @apply bg-muted-foreground/50;
+}
+
+/* Status indicators */
+.status-dot {
+  @apply inline-block w-2 h-2 rounded-full;
+}
+
+.status-dot.running {
+  @apply bg-green-500;
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+.status-dot.stopped {
+  @apply bg-red-500;
+}
+
+@keyframes pulse-glow {
+  0%, 100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+  }
+  50% {
+    opacity: 0.7;
+    box-shadow: 0 0 0 4px rgba(34, 197, 94, 0);
+  }
+}
