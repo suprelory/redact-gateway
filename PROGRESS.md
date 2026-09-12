@@ -78,7 +78,7 @@ import { BUILTIN_RULES } from './engine/builtin-rules.js';
 
 // 脱敏
 const result = redactText(
-  'My phone is 13812345678 and API key is sk_test_4eC39HqLyjWDarjtT1zdp7dc',
+  'My phone is 13812345678 and API key is sk_test_xxxxxxxxxxxxxxxxxxxxx',
   BUILTIN_RULES,
   { creator: 'user-123' }
 );
