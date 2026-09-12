@@ -1,32 +1,26 @@
 version: '3.8'
 
 services:
-  redact-gateway:
+  gateway:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: redact-gateway
-    restart: unless-stopped
     ports:
-      - "127.0.0.1:18787:18787"  # Proxy port
-      - "127.0.0.1:18788:18788"  # Management port
-    volumes:
-      - redact-data:/data
+      - "18787:18787"  # Proxy port
+      - "18788:18788"  # Management API port
     environment:
-      - MASTER_KEY=${MASTER_KEY:?MASTER_KEY is required}
-      - ADMIN_TOKEN=${ADMIN_TOKEN:-}
       - PROXY_PORT=18787
       - MANAGEMENT_PORT=18788
+      - MASTER_KEY=${MASTER_KEY}
+      - ADMIN_TOKEN=${ADMIN_TOKEN}
       - DATA_DIR=/data
-      - LOG_LEVEL=${LOG_LEVEL:-info}
-      - NODE_ENV=production
+      - LOG_LEVEL=info
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:18788/api/status')"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:18788/api/status"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
-
-volumes:
-  redact-data:
-    driver: local

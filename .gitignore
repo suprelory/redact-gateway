@@ -1,33 +1,29 @@
-# Dependencies
-node_modules/
-.pnpm-debug.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
+# Binaries
+gateway
+gateway.exe
+*.exe
+*.dll
+*.so
+*.dylib
 
-# Build outputs
-dist/
-build/
-*.tsbuildinfo
-
-# Environment
-.env
-.env.local
-.env.*.local
+# Go
+go.work
+vendor/
 
 # Data
 data/
 *.db
-*.db-shm
-*.db-wal
+*.sqlite
+*.key
+.master.key
 
 # Logs
-logs/
 *.log
+logs/
 
 # IDE
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
@@ -35,11 +31,28 @@ logs/
 # OS
 .DS_Store
 Thumbs.db
+*.bak
 
-# Testing
+# Build artifacts
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Node.js (frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# Frontend build
+frontend/dist/
+frontend/build/
+
+# Test
+*.test
 coverage/
-.nyc_output/
-
-# Temporary
-tmp/
-temp/
+*.out
