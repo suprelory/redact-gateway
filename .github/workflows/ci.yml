@@ -134,7 +134,7 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v4
+        uses: golangci/golangci-lint-action@v9
         with:
           version: latest
           working-directory: backend
