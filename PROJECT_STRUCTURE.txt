@@ -1,0 +1,49 @@
+redact-gateway/
+├── backend/                        # Go backend (NEW)
+│   ├── cmd/
+│   │   └── gateway/
+│   │       └── main.go            # Entry point (74 lines)
+│   ├── internal/
+│   │   ├── api/
+│   │   │   └── handler.go         # Management API (88 lines)
+│   │   ├── config/
+│   │   │   └── config.go          # Configuration (115 lines)
+│   │   ├── engine/
+│   │   │   ├── builtin_rules.go   # 13 built-in rules (144 lines)
+│   │   │   ├── entropy.go         # Cross-entropy detection (212 lines)
+│   │   │   ├── matcher.go         # Rule matching (182 lines)
+│   │   │   ├── redactor.go        # Redaction logic (162 lines)
+│   │   │   └── restorer.go        # Restoration & streaming (175 lines)
+│   │   ├── proxy/
+│   │   │   └── handler.go         # Proxy handler (159 lines)
+│   │   └── storage/
+│   │       └── memory.go          # Request-local storage (97 lines)
+│   ├── pkg/
+│   │   └── types/
+│   │       └── types.go           # Type definitions (94 lines)
+│   ├── go.mod                     # Module definition
+│   ├── go.sum                     # Dependencies (18 modules)
+│   ├── gateway.exe                # Built binary (13MB)
+│   ├── README.md                  # Backend documentation
+│   ├── TODO.md                    # Remaining tasks
+│   └── CHANGELOG.md               # Version history
+│
+├── frontend/                       # React frontend (UNCHANGED)
+│   ├── src/
+│   ├── package.json
+│   └── ... (preserved from original)
+│
+├── README.md                       # Main project documentation
+├── MIGRATION.md                    # TypeScript → Go migration details
+├── QUICKSTART.md                   # Getting started guide
+├── STATUS.md                       # Implementation status
+├── SUMMARY.md                      # Final summary
+├── Dockerfile                      # Multi-stage Go build
+├── docker-compose.yml              # Container orchestration
+├── build.sh                        # Linux/Mac build script
+├── build.bat                       # Windows build script
+└── .env.example                    # Configuration template
+
+Total Go Code: ~1,500 lines
+Total Documentation: 8 markdown files
+Build Artifacts: gateway.exe (13MB)
