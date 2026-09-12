@@ -16,13 +16,17 @@ type Rule struct {
 	ID               string     `json:"id"`
 	Type             string     `json:"type"`              // PHONE, EMAIL, API_KEY, etc.
 	Name             string     `json:"name"`
+	Description      string     `json:"description,omitempty"`
 	Enabled          bool       `json:"enabled"`
 	Builtin          bool       `json:"builtin"`
 	Priority         int        `json:"priority"`          // 100=highest, 50=lowest
 	Method           RuleMethod `json:"method"`            // regex, dict, entropy
 	Pattern          string     `json:"pattern,omitempty"` // for regex
 	CaptureGroup     int        `json:"captureGroup,omitempty"`
-	Dictionary       []string   `json:"dictionary,omitempty"`      // for dict
+	Dictionary       []string   `json:"dictionary,omitempty"`       // for dict
+	CaseSensitive    bool       `json:"caseSensitive,omitempty"`    // for dict
+	WordBoundary     bool       `json:"wordBoundary,omitempty"`     // for dict
+	MinLength        int        `json:"minLength,omitempty"`        // for entropy
 	EntropyThreshold float64    `json:"entropyThreshold,omitempty"` // for entropy
 	AllowList        []string   `json:"allowList,omitempty"`
 }
