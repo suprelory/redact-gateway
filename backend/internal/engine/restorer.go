@@ -166,17 +166,17 @@ func RestoreSSEStream(reader io.Reader, mappingTable map[string]string) (io.Read
 			}
 
 			if len(restored) > 0 {
-				pw.Write(restored)
+				_, _ = pw.Write(restored)
 			}
 
 			// 写入换行符
-			pw.Write([]byte("\n"))
+			_, _ = pw.Write([]byte("\n"))
 		}
 
 		// 刷新剩余缓冲区
 		remaining, _ := sr.Flush()
 		if len(remaining) > 0 {
-			pw.Write(remaining)
+			_, _ = pw.Write(remaining)
 		}
 	}()
 

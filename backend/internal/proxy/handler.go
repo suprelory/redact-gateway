@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,7 +83,7 @@ func (h *Handler) HandleProxy(c *fiber.Ctx) error {
 		// 通用文本脱敏
 		redactResult := engine.Redact(string(bodyBytes), redactOpts)
 		for _, mapping := range redactResult.Mappings {
-			reqCtx.SaveMapping(&mapping)
+			_ = reqCtx.SaveMapping(&mapping)
 		}
 		redactedBody = []byte(redactResult.RedactedText)
 	}
@@ -103,7 +104,7 @@ func (h *Handler) HandleProxy(c *fiber.Ctx) error {
 		}
 	})
 	upstreamReq.Header.Set("Authorization", apiKey)
-	upstreamReq.Header.Set("Content-Length", string(len(redactedBody)))
+	upstreamReq.Header.Set("Content-Length", strconv.Itoa(len(redactedBody)))
 
 	// 8. 发送请求
 	client := &http.Client{Timeout: 60 * time.Second}
@@ -156,12 +157,12 @@ func (h *Handler) redactChatRequest(bodyBytes []byte, opts engine.RedactOptions,
 	// 脱敏 messages 数组
 	if messages, ok := payload["messages"].([]interface{}); ok {
 		for i, msg := range messages {
-			if msgMap, ok := msg.(map[string]interface{}); ok {
-				if content, ok := msgMap["content"].(string); ok {
-					result := engine.Redact(content, opts)
-					for _, mapping := range result.Mappings {
-						reqCtx.SaveMapping(&mapping)
-					}
+				if msgMap, ok := msg.(map[string]interface{}); ok {
+					if content, ok := msgMap["content"].(string); ok {
+						result := engine.Redact(content, opts)
+						for _, mapping := range result.Mappings {
+							_ = reqCtx.SaveMapping(&mapping)
+						}
 
 					// 注入 Redact Notice 到最后一个用户消息
 					if i == len(messages)-1 && msgMap["role"] == "user" && result.RedactedCount > 0 {
