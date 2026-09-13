@@ -65,9 +65,16 @@ func (c *Context) RedactTextAtPath(text string, flags DetectorFlags, fieldPath s
 }
 
 func (c *Context) RestoreText(text string) string {
+	return c.restoreText(text, false)
+}
+
+func (c *Context) restoreText(text string, jsonString bool) string {
 	return placeholderPattern.ReplaceAllStringFunc(text, func(token string) string {
 		if raw, ok := c.tokenToRaw[token]; ok {
 			c.restoreHits++
+			if jsonString {
+				return escapeJSONString(raw)
+			}
 			return raw
 		}
 		return token

@@ -24,6 +24,13 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 		if shouldSkipPath(path) {
 			return typed, nil
 		}
+		if len(path) > 0 && isJSONTextField(path[len(path)-1]) {
+			if out, valid, err := rewriteJSONText(typed, func(text string) (string, error) {
+				return context.RedactTextAtPath(text, flags, fieldPath)
+			}); valid || err != nil {
+				return out, err
+			}
+		}
 		return context.RedactTextAtPath(typed, flags, fieldPath)
 	case []any:
 		out := make([]any, len(typed))
@@ -51,17 +58,21 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 }
 
 func RestoreJSON(value any, context *Context) any {
+	return restoreJSON(value, context, "")
+}
+
+func restoreJSON(value any, context *Context, key string) any {
 	switch typed := value.(type) {
 	case string:
-		return context.RestoreText(typed)
+		return restoreString(typed, context, isJSONTextField(key))
 	case []any:
 		for index := range typed {
-			typed[index] = RestoreJSON(typed[index], context)
+			typed[index] = restoreJSON(typed[index], context, key)
 		}
 		return typed
 	case map[string]any:
 		for key := range typed {
-			typed[key] = RestoreJSON(typed[key], context)
+			typed[key] = restoreJSON(typed[key], context, key)
 		}
 		return typed
 	default:

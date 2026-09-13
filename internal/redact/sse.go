@@ -131,9 +131,10 @@ func keyPart(key string) pathPart  { return pathPart{key: key} }
 func indexPart(index int) pathPart { return pathPart{index: index, isIndex: true} }
 
 type streamField struct {
-	path    []pathPart
-	channel string
-	source  string
+	path     []pathPart
+	channel  string
+	source   string
+	jsonText bool
 }
 
 type queuedEvent struct {
@@ -150,8 +151,9 @@ type fieldRecord struct {
 }
 
 type channelState struct {
-	text    string
-	records []fieldRecord
+	text     string
+	records  []fieldRecord
+	jsonText bool
 }
 
 type sseEventRestorer struct {
@@ -195,7 +197,7 @@ func (r *sseEventRestorer) ingest(raw string) (string, error) {
 	for _, field := range fields {
 		channel := r.channels[field.channel]
 		if channel == nil {
-			channel = &channelState{}
+			channel = &channelState{jsonText: field.jsonText}
 			r.channels[field.channel] = channel
 		}
 		channel.text += field.source
@@ -227,7 +229,7 @@ func (r *sseEventRestorer) maybeFlushChannel(name string, force bool) error {
 	if !force && possiblePlaceholderSuffixLength(channel.text) > 0 {
 		return nil
 	}
-	restored := r.context.RestoreText(channel.text)
+	restored := restoreString(channel.text, r.context, channel.jsonText)
 	for _, record := range channel.records {
 		if err := setStringAt(record.event.data, record.path, ""); err != nil {
 			return err
@@ -308,6 +310,7 @@ func streamFields(data any, eventName string) []streamField {
 			fields = append(fields, streamField{
 				path:    []pathPart{keyPart("delta")},
 				channel: "delta:" + typeName + ":" + streamIdentity(object), source: delta,
+				jsonText: typeName == "response.function_call_arguments.delta",
 			})
 		}
 	case map[string]any:
@@ -330,6 +333,7 @@ func collectStringLeaves(value any, base []pathPart, channelPrefix string, field
 				}
 				*fields = append(*fields, streamField{
 					path: appendPath(base, next...), channel: channelPrefix + ":" + pathKey(next), source: text,
+					jsonText: isJSONTextField(key),
 				})
 				continue
 			}
@@ -349,7 +353,7 @@ func restoreCompleteStrings(value any, context *Context, excluded map[string]str
 			next := appendPath(path, keyPart(key))
 			if text, ok := child.(string); ok {
 				if _, skip := excluded[pathKey(next)]; !skip {
-					typed[key] = context.RestoreText(text)
+					typed[key] = restoreString(text, context, isJSONTextField(key))
 				}
 				continue
 			}
