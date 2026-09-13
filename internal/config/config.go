@@ -15,6 +15,7 @@ import (
 const (
 	defaultMaxBody       = 16 * 1024 * 1024
 	defaultMaxRedactions = 16_384
+	minimumAdminTokenLen = 12
 )
 
 type Config struct {
@@ -128,15 +129,15 @@ func defaultDataDir() string {
 
 func loadOrCreateAdminToken(dataDir, configured string) (string, error) {
 	if configured != "" {
-		if len(configured) < 16 {
-			return "", fmt.Errorf("REDACT_ADMIN_TOKEN must contain at least 16 characters")
+		if len(configured) < minimumAdminTokenLen {
+			return "", fmt.Errorf("REDACT_ADMIN_TOKEN must contain at least %d characters", minimumAdminTokenLen)
 		}
 		return configured, nil
 	}
 
 	path := filepath.Join(dataDir, "admin-token")
 	if data, err := os.ReadFile(path); err == nil {
-		if token := strings.TrimSpace(string(data)); len(token) >= 16 {
+		if token := strings.TrimSpace(string(data)); len(token) >= minimumAdminTokenLen {
 			return token, nil
 		}
 	}

@@ -70,6 +70,8 @@ go run ./cmd/redact-gateway serve
 
 首次启动会在日志中输出管理令牌，并保存到本地数据目录的 `admin-token` 文件。
 
+通过 `REDACT_ADMIN_TOKEN` 指定的管理令牌长度至少为 12 个字符。
+
 ## Docker Compose
 
 ```bash
