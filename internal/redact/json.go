@@ -15,13 +15,17 @@ var controlKeys = map[string]struct{}{
 }
 
 func RedactJSON(value any, context *Context, flags DetectorFlags) (any, error) {
-	return transformJSON(value, context, flags, nil, "$")
+	return RedactProtocolJSON(value, context, flags, "generic")
 }
 
-func transformJSON(value any, context *Context, flags DetectorFlags, path []string, fieldPath string) (any, error) {
+func RedactProtocolJSON(value any, context *Context, flags DetectorFlags, protocol string) (any, error) {
+	return transformJSON(value, context, flags, nil, "$", protocol)
+}
+
+func transformJSON(value any, context *Context, flags DetectorFlags, path []string, fieldPath, protocol string) (any, error) {
 	switch typed := value.(type) {
 	case string:
-		if shouldSkipPath(path) {
+		if shouldSkipPath(path) || protocol == "openai_responses" && isResponsesOpaquePath(path) {
 			return typed, nil
 		}
 		if len(path) > 0 && isJSONTextField(path[len(path)-1]) {
@@ -35,7 +39,7 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 	case []any:
 		out := make([]any, len(typed))
 		for index, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, jsonIndex(index)), fieldPath+jsonIndex(index))
+			mapped, err := transformJSON(child, context, flags, append(path, jsonIndex(index)), fieldPath+jsonIndex(index), protocol)
 			if err != nil {
 				return nil, err
 			}
@@ -45,7 +49,7 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, key), auditPathKey(fieldPath, key))
+			mapped, err := transformJSON(child, context, flags, append(path, key), auditPathKey(fieldPath, key), protocol)
 			if err != nil {
 				return nil, err
 			}
@@ -55,6 +59,13 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 	default:
 		return value, nil
 	}
+}
+
+func isResponsesOpaquePath(path []string) bool {
+	if len(path) == 1 && path[0] == "previous_response_id" {
+		return true
+	}
+	return len(path) == 3 && path[0] == "input" && strings.HasPrefix(path[1], "[") && path[2] == "encrypted_content"
 }
 
 func RestoreJSON(value any, context *Context) any {

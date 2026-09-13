@@ -20,6 +20,8 @@ type Context struct {
 	restoredTokens map[string]struct{}
 	unresolvedHits int
 	degradedHits   int
+	usedTokens     map[string]struct{}
+	tokenSource    func(label, raw string) (string, error)
 }
 
 func NewContext(max int) *Context {
@@ -30,6 +32,7 @@ func NewContext(max int) *Context {
 		hits:           make(map[string]int),
 		fields:         make(map[string]struct{}),
 		restoredTokens: make(map[string]struct{}),
+		usedTokens:     make(map[string]struct{}),
 	}
 }
 
@@ -153,25 +156,42 @@ func (c *Context) RestoreStatus() string {
 
 func (c *Context) tokenFor(label, raw string) (string, error) {
 	if token, ok := c.rawToToken[raw]; ok {
+		if _, used := c.usedTokens[token]; !used && len(c.usedTokens) >= c.max {
+			return "", ErrRedactionLimit
+		}
+		c.usedTokens[token] = struct{}{}
 		return token, nil
 	}
-	if len(c.rawToToken) >= c.max {
+	if len(c.usedTokens) >= c.max {
 		return "", ErrRedactionLimit
 	}
+	create := newPlaceholder
+	if c.tokenSource != nil {
+		create = func(label string) (string, error) { return c.tokenSource(label, raw) }
+	}
 	for {
-		bytes := make([]byte, 10)
-		if _, err := rand.Read(bytes); err != nil {
+		token, err := create(label)
+		if err != nil {
 			return "", err
 		}
-		id := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes)
-		token := "{{RG_" + sanitizeLabel(label) + "_" + id + "}}"
 		if existing, exists := c.tokenToRaw[token]; exists && existing != raw {
+			create = newPlaceholder // Do not retry a cached collision forever.
 			continue
 		}
 		c.rawToToken[raw] = token
 		c.tokenToRaw[token] = raw
+		c.usedTokens[token] = struct{}{}
 		return token, nil
 	}
+}
+
+func newPlaceholder(label string) (string, error) {
+	bytes := make([]byte, 10)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	id := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(bytes)
+	return "{{RG_" + sanitizeLabel(label) + "_" + id + "}}", nil
 }
 
 func sanitizeLabel(label string) string {

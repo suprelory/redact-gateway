@@ -64,7 +64,43 @@ Authorization 和厂商 API Key 头只会转发给 URL 中指定的上游，不�
 
 SSE 按文本、工具调用及内容索引分别恢复，只暂存可能属于占位符的尾部；确定的前缀、其他通道和心跳立即转发。尾部会在对应的结束事件或 EOF 前输出；Responses 的完整快照与已输出原文前缀一致时，可用于补全未发送完的占位符。工具参数分片支持 JSON 转义和 Unicode 转义。单个 SSE 事件上限为 `REDACT_MAX_BODY_BYTES` 的两倍（默认 32 MiB），每条流最多维护 1024 个通道，暂存尾部及事件模板合计不超过 4 MiB。超限时终止流，保留此前已完成的输出，日志记录 `stream_limit_exceeded` 和“响应异常”；已经发出的 HTTP 200 不会改变。
 
-只有存在可还原映射时才向用户消息添加脱敏提示。提示要求静默完成原任务，按需原样引用占位符，不再包含可被模型复述的占位符格式示例。系统及开发者指令保持原有优先级；没有敏感内容的请求不会添加提示。
+只有存在可还原映射时才向用户消息添加脱敏提示。提示要求静默完成原任务，按需原样引用占位符，不再包含可被模型复述的占位符格式示例。系统及开发者指令保持原有优先级；本次请求及启用的会话中均没有映射时，不会添加提示。
+
+## 可选的会话映射缓存
+
+默认每个请求独立保存映射。如果客户端仅通过 Responses 的 `previous_response_id` 续接，上游可能再次输出先前请求的占位符，而当前请求并没有对应原文。需要跨请求恢复时，在 `.env` 中启用 `REDACT_SESSION_CACHE_ENABLED=1`，重新创建容器，并让客户端为每段对话生成独立的随机 `X-Redact-Session`，在续接时保持一致。
+
+```python
+from uuid import uuid4
+
+# client 使用上文配置的网关地址和上游 API Key。
+session_headers = {"X-Redact-Session": str(uuid4())}
+first = client.responses.create(
+    model="your-model",
+    input="请记住后续任务使用的邮箱 alice@example.com",
+    extra_headers=session_headers,
+)
+second = client.responses.create(
+    model="your-model",
+    previous_response_id=first.id,
+    input="重复刚才的邮箱",
+    extra_headers=session_headers,
+)
+```
+
+会话头只由网关消费，不转发给上游，也不写入日志。标识须为 16–256 个 ASCII 字母、数字、下划线或连字符；UUID 符合要求。缓存按会话标识、转发的授权/API Key、组织/项目以及上游完整接口地址（含端口、路径和查询参数）隔离。缺少会话标识或上游凭据时继续按请求隔离；同一 API Key 下不同用户或对话应使用不同标识。改变凭据、项目或接口地址后不会共享之前的映射。
+
+| 环境变量 | 默认值 | 含义 |
+|---|---|---|
+| `REDACT_SESSION_CACHE_ENABLED` | `0` | 显式启用内存缓存 |
+| `REDACT_SESSION_CACHE_TTL_SECONDS` | `1800` | 会话空闲过期时间，每次同范围请求刷新 |
+| `REDACT_SESSION_CACHE_MAX_SESSIONS` | `128` | 全局会话上限 |
+| `REDACT_SESSION_CACHE_MAX_ENTRIES` | `16384` | 全局映射条数上限 |
+| `REDACT_SESSION_CACHE_MAX_BYTES` | `16777216` | 原文、占位符及索引开销的缓存预算，至少 1024 字节 |
+
+缓存容量不足时优先淘汰较久未使用的会话；单个会话用满预算或单值过大时，新值仍可在当前请求恢复，但不会跨请求缓存。映射仅存在进程内存中，不写 SQLite 或磁盘；正在处理的请求持有独立映射，缓存过期、淘汰或关闭不会破坏这些响应的还原。还原次数与规则命中仍按请求统计，不继承旧请求的计数。
+
+过期、淘汰、进程重启或请求落到其他实例后，历史映射可能不可用。未知占位符会原样保留并计入“未还原”；此时应重新发送必要的原始上下文并开始新的上游会话。多实例部署需要会话请求落到同一实例，缓存不提供持久化续接。Responses 顶层的 `previous_response_id` 与 `input` 项中的 `encrypted_content` 按协议原样传递，不经过高熵脱敏。
 
 ## 本地运行
 

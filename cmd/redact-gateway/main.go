@@ -63,6 +63,7 @@ func run() error {
 	}
 
 	proxy := gateway.NewProxy(cfg, eventStore, logger, version)
+	defer proxy.Close()
 	adminServer := admin.NewServer(cfg.AdminToken, proxy, eventStore)
 	dataHTTP := &http.Server{
 		Addr: cfg.ListenAddr, Handler: proxy,

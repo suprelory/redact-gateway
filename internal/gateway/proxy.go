@@ -45,13 +45,21 @@ type Proxy struct {
 	inFlight     atomic.Int64
 	settingsMu   sync.RWMutex
 	allowedHosts []string
+	sessionCache *redact.SessionCache
 }
 
 func NewProxy(cfg config.Config, eventStore *store.Store, logger *slog.Logger, version string) *Proxy {
-	return &Proxy{
+	proxy := &Proxy{
 		cfg: cfg, store: eventStore, client: newHTTPClient(cfg), logger: logger,
 		startedAt: time.Now(), version: version, allowedHosts: cloneHosts(cfg.AllowedHosts),
 	}
+	if cfg.SessionCacheEnabled {
+		proxy.sessionCache = redact.NewSessionCache(redact.SessionCacheOptions{
+			TTL: cfg.SessionCacheTTL, MaxSessions: cfg.SessionCacheMaxSessions,
+			MaxEntries: cfg.SessionCacheMaxEntries, MaxBytes: cfg.SessionCacheMaxBytes,
+		})
+	}
+	return proxy
 }
 
 func (p *Proxy) AllowedHosts() []string {
@@ -143,7 +151,13 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	contextMap := redact.NewContext(p.cfg.MaxRedactions)
+	contextMap, err := p.requestContext(request, proxyRoute.Upstream)
+	if err != nil {
+		event.Status = http.StatusBadRequest
+		event.ErrorClass = "invalid_session"
+		writeGatewayError(writer, event.Status, event.ErrorClass, err.Error(), p.cfg.CORSOrigin)
+		return
+	}
 	defer func() {
 		event.RestoreCount = contextMap.RestoreCount()
 		event.RestoreUniqueCount = contextMap.RestoreUniqueCount()
@@ -249,11 +263,11 @@ func (p *Proxy) prepareRequestBody(request *http.Request, proxyRoute route.Proxy
 		Secret: proxyRoute.Flags.Secret, Identity: proxyRoute.Flags.Identity,
 		Bank: proxyRoute.Flags.Bank, Email: proxyRoute.Flags.Email, Gitleaks: proxyRoute.Flags.Gitleaks,
 	}
-	redactedValue, err := redact.RedactJSON(value, contextMap, flags)
+	protocol := redact.DetectProtocol(value, proxyRoute.Upstream.Path, request.Header.Get("Anthropic-Version") != "")
+	redactedValue, err := redact.RedactProtocolJSON(value, contextMap, flags, protocol)
 	if err != nil {
 		return nil, "generic", int64(len(raw)), err
 	}
-	protocol := redact.DetectProtocol(redactedValue, proxyRoute.Upstream.Path, request.Header.Get("Anthropic-Version") != "")
 	if contextMap.HasMappings() {
 		redact.InjectNotice(redactedValue, protocol)
 	}
@@ -475,7 +489,7 @@ func skipRequestHeader(name string) bool {
 	case "host", "content-length", "connection", "transfer-encoding", "keep-alive",
 		"proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade",
 		"proxy-connection", "accept-encoding", "x-real-ip", "forwarded", "via",
-		"cookie", "cookie2", "origin", "referer", "x-redact-token":
+		"cookie", "cookie2", "origin", "referer", "x-redact-token", "x-redact-session":
 		return true
 	default:
 		return strings.HasPrefix(key, "cf-") || strings.HasPrefix(key, "sec-") || strings.HasPrefix(key, "x-forwarded-")
@@ -509,7 +523,7 @@ func writePreflight(writer http.ResponseWriter, request *http.Request, origin st
 	writer.Header().Set("Access-Control-Allow-Methods", "GET,HEAD,POST,PUT,PATCH,DELETE,OPTIONS")
 	headers := request.Header.Get("Access-Control-Request-Headers")
 	if headers == "" {
-		headers = "authorization,content-type,x-api-key,anthropic-version,openai-organization,openai-project"
+		headers = "authorization,content-type,x-api-key,anthropic-version,openai-organization,openai-project,x-redact-session"
 	}
 	writer.Header().Set("Access-Control-Allow-Headers", headers)
 	writer.Header().Set("Access-Control-Max-Age", "86400")

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -19,16 +20,21 @@ const (
 )
 
 type Config struct {
-	ListenAddr        string
-	AdminAddr         string
-	DataDir           string
-	AdminToken        string
-	AllowedHosts      []string
-	AllowPrivateHosts bool
-	MaxBodyBytes      int64
-	MaxRedactions     int
-	LogRetentionDays  int
-	CORSOrigin        string
+	ListenAddr              string
+	AdminAddr               string
+	DataDir                 string
+	AdminToken              string
+	AllowedHosts            []string
+	AllowPrivateHosts       bool
+	MaxBodyBytes            int64
+	MaxRedactions           int
+	LogRetentionDays        int
+	CORSOrigin              string
+	SessionCacheEnabled     bool
+	SessionCacheTTL         time.Duration
+	SessionCacheMaxSessions int
+	SessionCacheMaxEntries  int
+	SessionCacheMaxBytes    int
 }
 
 func Load() (Config, error) {
@@ -41,6 +47,9 @@ func Load() (Config, error) {
 		MaxRedactions:     envInt("REDACT_MAX_REDACTIONS", defaultMaxRedactions),
 		LogRetentionDays:  envInt("REDACT_LOG_RETENTION_DAYS", 30),
 		CORSOrigin:        envString("REDACT_CORS_ORIGIN", "*"),
+	}
+	if err := loadSessionCacheConfig(&cfg); err != nil {
+		return Config{}, err
 	}
 
 	var configuredHosts []string
