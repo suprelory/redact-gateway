@@ -4,12 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/base32"
 	"errors"
-	"regexp"
 	"sort"
 	"strings"
 )
-
-var placeholderPattern = regexp.MustCompile(`\{\{RG_[A-Z][A-Z0-9]{0,31}_[A-Z2-7]{16}\}\}`)
 
 var ErrRedactionLimit = errors.New("redaction limit exceeded")
 
@@ -73,18 +70,32 @@ func (c *Context) RestoreText(text string) string {
 }
 
 func (c *Context) restoreText(text string, jsonString bool) string {
-	return placeholderPattern.ReplaceAllStringFunc(text, func(token string) string {
-		if raw, ok := c.tokenToRaw[token]; ok {
+	var out strings.Builder
+	position := 0
+	for _, candidate := range placeholderCandidates(text) {
+		out.WriteString(text[position:candidate.start])
+		original := text[candidate.start:candidate.end]
+		if raw, ok := c.tokenToRaw[candidate.token]; ok {
 			c.restoreHits++
-			c.restoredTokens[token] = struct{}{}
-			if jsonString {
-				return escapeJSONString(raw)
+			c.restoredTokens[candidate.token] = struct{}{}
+			if original != candidate.token {
+				c.degradedHits++
 			}
-			return raw
+			if jsonString {
+				raw = escapeJSONString(raw)
+			}
+			out.WriteString(raw)
+		} else {
+			c.unresolvedHits++
+			out.WriteString(original)
 		}
-		c.unresolvedHits++
-		return token
-	})
+		position = candidate.end
+	}
+	if position == 0 {
+		return text
+	}
+	out.WriteString(text[position:])
+	return out.String()
 }
 
 func (c *Context) Hits() map[string]int {

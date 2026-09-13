@@ -43,7 +43,6 @@ var (
 	identityDetector    = detector{label: "IDCARD", priority: 100, pattern: regexp.MustCompile(`[0-9]{17}[0-9Xx]`), validator: validChinaIDBoundary}
 	bankPlainDetector   = detector{label: "CARD", priority: 85, pattern: regexp.MustCompile(`[0-9]{13,19}`), validator: validBankBoundary}
 	bankGroupedDetector = detector{label: "CARD", priority: 85, pattern: regexp.MustCompile(`[0-9]{4}(?:[ -][0-9]{4}){2,3}(?:[ -][0-9]{1,3})?`), validator: validBankBoundary}
-	protectedDetector   = regexp.MustCompile(`\{\{RG_[A-Z][A-Z0-9]{0,31}_[A-Z2-7]{16}\}\}`)
 	highEntropyToken    = regexp.MustCompile(`[A-Za-z0-9]{12,}`)
 )
 
@@ -58,7 +57,10 @@ var gitleaksDetectors = []detector{
 }
 
 func FindSensitiveMatches(text string, flags DetectorFlags) []Match {
-	protected := regexMatches(text, protectedDetector, "EXISTING", 1000, nil)
+	var protected []Match
+	for _, candidate := range placeholderCandidates(text) {
+		protected = append(protected, Match{Start: candidate.start, End: candidate.end})
+	}
 	candidates := make([]Match, 0, 16)
 	if flags.Secret {
 		candidates = append(candidates, collect(text, secretDetector)...)

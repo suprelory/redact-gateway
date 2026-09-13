@@ -155,9 +155,28 @@ type fieldRecord struct {
 }
 
 type channelState struct {
-	text     string
-	records  []fieldRecord
-	jsonText bool
+	text        string
+	records     []fieldRecord
+	jsonText    bool
+	previous    byte
+	hasPrevious bool
+}
+
+func (c *channelState) restore(text string, context *Context) string {
+	source := text
+	guard := c.hasPrevious && identifierByte(c.previous) && len(text) > 0 && (text[0] == 'R' || text[0] == 'r')
+	if guard {
+		text = string(c.previous) + text
+	}
+	restored := restoreString(text, context, c.jsonText)
+	if guard {
+		restored = restored[1:]
+	}
+	if len(source) > 0 {
+		c.previous = source[len(source)-1]
+		c.hasPrevious = true
+	}
+	return restored
 }
 
 type sseEventRestorer struct {
@@ -265,7 +284,7 @@ func (r *sseEventRestorer) maybeFlushChannel(name string, force bool) error {
 	if !force && possiblePlaceholderSuffixLength(channel.text) > 0 {
 		return nil
 	}
-	restored := restoreString(channel.text, r.context, channel.jsonText)
+	restored := channel.restore(channel.text, r.context)
 	for _, record := range channel.records {
 		if err := setStringAt(record.event.data, record.path, ""); err != nil {
 			return err
@@ -501,71 +520,4 @@ func appendPath(path []pathPart, parts ...pathPart) []pathPart {
 	out = append(out, path...)
 	out = append(out, parts...)
 	return out
-}
-
-func possiblePlaceholderSuffixLength(text string) int {
-	start := len(text) - 64
-	if start < 0 {
-		start = 0
-	}
-	for index := len(text) - 1; index >= start; index-- {
-		if text[index] == '{' && isPlaceholderPrefix(text[index:]) {
-			return len(text) - index
-		}
-	}
-	return 0
-}
-
-func isPlaceholderPrefix(value string) bool {
-	fixed := "{{RG_"
-	if len(value) <= len(fixed) {
-		return strings.HasPrefix(fixed, value)
-	}
-	if !strings.HasPrefix(value, fixed) {
-		return false
-	}
-	rest := value[len(fixed):]
-	separator := strings.IndexByte(rest, '_')
-	if separator < 0 {
-		return len(rest) <= 32 && validLabelPrefix(rest)
-	}
-	label := rest[:separator]
-	if len(label) == 0 || len(label) > 32 || !validLabelPrefix(label) {
-		return false
-	}
-	tail := rest[separator+1:]
-	idLength := 0
-	for idLength < len(tail) && idLength < 16 && isBase32(tail[idLength]) {
-		idLength++
-	}
-	if idLength < len(tail) && idLength < 16 {
-		return false
-	}
-	if idLength < 16 {
-		return idLength == len(tail)
-	}
-	switch tail[idLength:] {
-	case "", "}":
-		return true
-	case "}}":
-		return false
-	default:
-		return false
-	}
-}
-
-func validLabelPrefix(value string) bool {
-	for index := 0; index < len(value); index++ {
-		b := value[index]
-		if b < 'A' || b > 'Z' {
-			if index == 0 || b < '0' || b > '9' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-func isBase32(value byte) bool {
-	return value >= 'A' && value <= 'Z' || value >= '2' && value <= '7'
 }
