@@ -1,0 +1,40 @@
+services:
+  redact-gateway:
+    image: ${REDACT_GATEWAY_IMAGE:-ghcr.io/your-org/redact-gateway:latest}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: redact-gateway
+    restart: unless-stopped
+    ports:
+      - "${REDACT_BIND_HOST:-127.0.0.1}:${REDACT_PROXY_PORT:-8787}:8787"
+      - "${REDACT_BIND_HOST:-127.0.0.1}:${REDACT_ADMIN_PORT:-8788}:8788"
+    volumes:
+      - redact_gateway_data:/data
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      REDACT_LISTEN_ADDR: 0.0.0.0:8787
+      REDACT_ADMIN_ADDR: 0.0.0.0:8788
+      REDACT_DATA_DIR: /data
+      REDACT_ADMIN_TOKEN: ${REDACT_ADMIN_TOKEN:?REDACT_ADMIN_TOKEN is required}
+      REDACT_ALLOWED_HOSTS: ${REDACT_ALLOWED_HOSTS:-}
+      REDACT_ALLOW_PRIVATE_UPSTREAMS: ${REDACT_ALLOW_PRIVATE_UPSTREAMS:-0}
+      REDACT_MAX_BODY_BYTES: ${REDACT_MAX_BODY_BYTES:-16777216}
+      REDACT_MAX_REDACTIONS: ${REDACT_MAX_REDACTIONS:-16384}
+      REDACT_LOG_RETENTION_DAYS: ${REDACT_LOG_RETENTION_DAYS:-30}
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8787/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  redact_gateway_data:

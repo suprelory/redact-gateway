@@ -1,0 +1,10 @@
+.git
+.github
+.env
+.redact-gateway
+*.sqlite3*
+redact-gateway
+redact-gateway.exe
+web/node_modules
+internal/admin/web/dist
+README.md

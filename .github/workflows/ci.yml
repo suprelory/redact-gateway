@@ -1,0 +1,86 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web console
+        working-directory: web
+        run: |
+          npm ci
+          npm run lint
+          npm run test
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: true
+
+      - name: Verify Go sources
+        shell: bash
+        run: |
+          test -z "$(gofmt -l cmd internal)"
+          go mod verify
+          go vet ./...
+          go test -race -count=1 ./...
+          go build ./cmd/redact-gateway
+
+  docker:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build local image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          push: false
+          platforms: linux/amd64
+          tags: redact-gateway:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test container
+        shell: bash
+        run: |
+          docker run -d --rm --name redact-gateway-ci \
+            -e REDACT_ADMIN_TOKEN=ci-test-admin-token \
+            -p 127.0.0.1:8787:8787 \
+            -p 127.0.0.1:8788:8788 \
+            redact-gateway:ci
+          trap 'docker stop redact-gateway-ci' EXIT
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8787/healthz >/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          curl --fail --silent http://127.0.0.1:8787/healthz
+          curl --fail --silent http://127.0.0.1:8788/api/v1/health
+          curl --fail --silent \
+            -H 'X-Redact-Token: ci-test-admin-token' \
+            http://127.0.0.1:8788/api/v1/status
