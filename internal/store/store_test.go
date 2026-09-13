@@ -45,7 +45,7 @@ func TestAllowedHostsPersistence(t *testing.T) {
 	}
 }
 
-func TestOpenMigratesRedactionFieldsColumn(t *testing.T) {
+func TestOpenMigratesEventDetails(t *testing.T) {
 	dataDir := t.TempDir()
 	initial, err := Open(dataDir, 30)
 	if err != nil {
@@ -67,9 +67,11 @@ func TestOpenMigratesRedactionFieldsColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`ALTER TABLE events DROP COLUMN redaction_fields_json`); err != nil {
-		db.Close()
-		t.Fatal(err)
+	for _, column := range []string{"redaction_fields_json", "restore_unique_count", "restore_unresolved_count", "restore_degraded_count", "restore_status"} {
+		if _, err := db.Exec("ALTER TABLE events DROP COLUMN " + column); err != nil {
+			db.Close()
+			t.Fatal(err)
+		}
 	}
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
@@ -84,6 +86,7 @@ func TestOpenMigratesRedactionFieldsColumn(t *testing.T) {
 		RequestID: "migration-test", Method: "POST", Protocol: "generic",
 		UpstreamScheme: "https", UpstreamHost: "example.com", UpstreamPath: "/v1",
 		Flags: "E", Status: 200, RedactionFields: []string{"$.message"}, RuleHits: map[string]int{"EMAIL": 1},
+		RestoreCount: 3, RestoreUniqueCount: 1, RestoreUnresolvedCount: 2, RestoreDegradedCount: 1, RestoreStatus: "partial",
 	}
 	if err := migrated.InsertEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
@@ -102,6 +105,9 @@ func TestOpenMigratesRedactionFieldsColumn(t *testing.T) {
 	if old[0].RequestID != legacy.RequestID || old[0].RuleHits["EMAIL"] != 2 || old[0].RedactionCount != 2 || old[0].RedactionFields == nil || len(old[0].RedactionFields) != 0 {
 		t.Fatalf("legacy details changed: %#v", old[0])
 	}
+	if old[0].RestoreStatus != "unavailable" || old[0].RestoreUniqueCount != 0 {
+		t.Fatalf("historical diagnostics fabricated: %#v", old[0])
+	}
 	if err := migrated.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -113,6 +119,9 @@ func TestOpenMigratesRedactionFieldsColumn(t *testing.T) {
 	events, err = reopened.Events(context.Background(), 10, "example.com")
 	if err != nil || len(events) != 1 || !reflect.DeepEqual(events[0].RedactionFields, event.RedactionFields) || !reflect.DeepEqual(events[0].RuleHits, event.RuleHits) {
 		t.Fatalf("persisted details = %#v, err=%v", events, err)
+	}
+	if events[0].RestoreCount != 3 || events[0].RestoreUniqueCount != 1 || events[0].RestoreUnresolvedCount != 2 || events[0].RestoreDegradedCount != 1 || events[0].RestoreStatus != "partial" {
+		t.Fatalf("restoration diagnostics not persisted: %#v", events[0])
 	}
 }
 

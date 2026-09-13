@@ -57,6 +57,10 @@ func (r *SSEStreamRestorer) Finish() ([]byte, error) {
 	return output.Bytes(), nil
 }
 
+// ErrorClass reports application failures carried inside an HTTP 200 stream.
+// It never copies upstream error messages, which may contain sensitive data.
+func (r *SSEStreamRestorer) ErrorClass() string { return r.events.errorClass }
+
 func nextSSEEvent(buffer []byte) (int, int) {
 	lf := bytes.Index(buffer, []byte("\n\n"))
 	crlf := bytes.Index(buffer, []byte("\r\n\r\n"))
@@ -157,9 +161,10 @@ type channelState struct {
 }
 
 type sseEventRestorer struct {
-	context  *Context
-	channels map[string]*channelState
-	queue    []*queuedEvent
+	context    *Context
+	channels   map[string]*channelState
+	queue      []*queuedEvent
+	errorClass string
 }
 
 func newSSEEventRestorer(context *Context) *sseEventRestorer {
@@ -183,6 +188,9 @@ func (r *sseEventRestorer) ingest(raw string) (string, error) {
 		direct := parsed.serialize(r.context.RestoreText(parsed.dataText))
 		r.queue = append(r.queue, &queuedEvent{safe: true, direct: direct})
 		return r.drain(false)
+	}
+	if r.errorClass == "" {
+		r.errorClass = streamErrorClass(data, parsed.eventName)
 	}
 
 	fields := streamFields(data, parsed.eventName)
@@ -210,6 +218,34 @@ func (r *sseEventRestorer) ingest(raw string) (string, error) {
 		}
 	}
 	return r.drain(false)
+}
+
+func streamErrorClass(data any, eventName string) string {
+	object, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	typeName, _ := object["type"].(string)
+	if typeName == "" {
+		typeName = eventName
+	}
+	switch typeName {
+	case "error":
+		return "upstream_stream_error"
+	case "response.failed":
+		return "upstream_response_failed"
+	case "response.incomplete":
+		return "upstream_response_incomplete"
+	}
+	if response, ok := object["response"].(map[string]any); ok {
+		switch response["status"] {
+		case "failed":
+			return "upstream_response_failed"
+		case "incomplete":
+			return "upstream_response_incomplete"
+		}
+	}
+	return ""
 }
 
 func (r *sseEventRestorer) finish() (string, error) {

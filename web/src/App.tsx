@@ -284,12 +284,12 @@ function Logs() {
       <section className="panel log-panel">
         <div className="table-wrap" ref={table}>
           <table aria-busy={eventsQuery.isFetching}>
-            <thead><tr><th>时间</th><th>上游</th><th>接口</th><th>协议</th><th>规则</th><th>脱敏/还原</th><th>状态</th><th>耗时</th><th>详情</th></tr></thead>
+            <thead><tr><th>时间</th><th>上游</th><th>接口</th><th>协议</th><th>规则</th><th>脱敏/还原</th><th>还原结果</th><th>HTTP 状态</th><th>耗时</th><th>详情</th></tr></thead>
             <tbody>
               {events.map((event) => <LogRow key={event.id} event={event} onDetails={() => setSelectedEvent(event)} />)}
               {!events.length && (eventsQuery.isPending || eventsQuery.isError
-                ? <tr><td className="empty-cell" colSpan={9}>{eventsQuery.isPending ? '正在加载请求日志…' : '请求日志加载失败'}</td></tr>
-                : <EmptyRow columns={9} />)}
+                ? <tr><td className="empty-cell" colSpan={10}>{eventsQuery.isPending ? '正在加载请求日志…' : '请求日志加载失败'}</td></tr>
+                : <EmptyRow columns={10} />)}
             </tbody>
           </table>
         </div>
@@ -434,6 +434,7 @@ function LogRow({ event, onDetails }: { event: GatewayEvent; onDetails: () => vo
       <td><Protocol value={event.protocol} streaming={event.streaming} /></td>
       <td><code>{event.flags}</code></td>
       <td><span className="count-pair"><b>{event.redaction_count}</b><span>/</span>{event.restore_count}</span></td>
+      <td><RestoreState event={event} /></td>
       <td><StatusCode value={event.status} /></td>
       <td>{event.duration_ms} ms</td>
       <td><button className="icon-button bordered detail-button" type="button" title="查看详情" aria-label={`查看请求 ${event.request_id} 的详情`} onClick={onDetails}><Eye /></button></td>
@@ -452,6 +453,8 @@ function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () 
 	}, [])
 	const ruleHits = Object.entries(event.rule_hits ?? {}).sort(([left], [right]) => left.localeCompare(right))
 	const fields = event.redaction_fields ?? []
+	const restoreInfo = restorationInfo(event.restore_status)
+	const hasRestoreDetails = !!event.restore_status && event.restore_status !== 'unavailable'
 	const upstream = `${event.upstream_scheme}://${event.upstream_host}${event.upstream_port ? `:${event.upstream_port}` : ''}`
 	return (
 		<div className="dialog-backdrop" role="presentation" onMouseDown={(mouseEvent) => { if (mouseEvent.target === mouseEvent.currentTarget) onClose() }}>
@@ -478,6 +481,17 @@ function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () 
 						<div><dt>耗时</dt><dd>{event.duration_ms} ms</dd></div>
 						<div><dt>规则组合</dt><dd><code>{event.flags || '—'}</code></dd></div>
 					</dl>
+					<DetailSection title="还原情况">
+						<div><RestoreState event={event} /></div>
+						<p className="detail-empty">{restoreInfo.description}</p>
+						<dl className="detail-summary">
+							<div><dt>还原次数</dt><dd>{event.restore_count}</dd></div>
+							<div><dt>唯一还原数</dt><dd>{hasRestoreDetails ? event.restore_unique_count ?? '—' : '—'}</dd></div>
+							<div><dt>未还原次数</dt><dd>{hasRestoreDetails ? event.restore_unresolved_count ?? '—' : '—'}</dd></div>
+							<div><dt>容错还原次数</dt><dd>{hasRestoreDetails ? event.restore_degraded_count ?? '—' : '—'}</dd></div>
+						</dl>
+						<p className="detail-empty">还原次数按响应中的替换累计，同一占位符在流式增量和完整快照中可能重复出现；唯一还原数按占位符去重。</p>
+					</DetailSection>
 					<DetailSection title="命中规则">
 						{ruleHits.length ? <ul className="detail-list">{ruleHits.map(([rule, count]) => <li key={rule}><span className="detail-rule-name">{ruleLabels[rule] ?? rule}</span><code>{rule}</code><strong>{count} 次</strong></li>)}</ul> : <p className="detail-empty">本次请求未命中脱敏规则</p>}
 					</DetailSection>
@@ -485,7 +499,7 @@ function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () 
 						{fields.length ? <ul className="field-list">{fields.map((field) => <li key={field}><code>{field}</code></li>)}</ul> : <p className="detail-empty">{event.redaction_count > 0 ? '此记录未保存脱敏字段路径（可能来自旧版本）' : '本次请求未发现可记录的脱敏字段'}</p>}
 					</DetailSection>
 					{event.error_class && <DetailSection title="错误分类"><p className="error-detail"><code>{event.error_class}</code></p></DetailSection>}
-					<p className="privacy-note">详情仅展示规则和字段路径，不包含请求或响应中的敏感原文。</p>
+					<p className="privacy-note">详情仅展示统计、规则和字段路径，不包含请求或响应中的敏感原文。</p>
 				</div>
 			</section>
 		</div>
@@ -494,6 +508,26 @@ function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () 
 
 function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
 	return <section className="detail-section"><h3>{title}</h3>{children}</section>
+}
+
+const restoreStates: Record<string, { label: string; tone: string; description: string }> = {
+  restored: { label: '已还原', tone: 'good', description: '响应中的已知占位符已恢复为原文。' },
+  partial: { label: '部分未还原', tone: 'warn', description: '响应中有占位符已还原，也有无法匹配原文的占位符。' },
+  unresolved: { label: '存在未还原', tone: 'warn', description: '响应中存在无法匹配原文的占位符。' },
+  no_placeholders: { label: '无需还原', tone: 'neutral', description: '输入有脱敏，但响应没有回显占位符。脱敏数与还原数不必相同。' },
+  no_sensitive_data: { label: '无脱敏内容', tone: 'neutral', description: '本次请求没有需要还原的脱敏映射。' },
+  response_error: { label: '响应异常', tone: 'bad', description: '上游返回错误或响应处理未正常完成，统计可能不完整；请查看错误分类。' },
+  not_processed: { label: '未执行还原', tone: 'neutral', description: '请求尚未进入响应还原阶段，或响应类型无需文本还原。' },
+  unavailable: { label: '未统计', tone: 'neutral', description: '此记录未保存还原诊断信息，无法补录历史统计。' },
+}
+
+function restorationInfo(status?: string) {
+  return restoreStates[status ?? 'unavailable'] ?? restoreStates.unavailable
+}
+
+function RestoreState({ event }: { event: GatewayEvent }) {
+  const info = restorationInfo(event.restore_status)
+  return <span className={`status-code restore-state ${info.tone}`} title={info.description}>{info.label}</span>
 }
 
 function Protocol({ value, streaming }: { value: string; streaming: boolean }) {

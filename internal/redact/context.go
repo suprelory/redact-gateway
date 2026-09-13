@@ -14,21 +14,25 @@ var placeholderPattern = regexp.MustCompile(`\{\{RG_[A-Z][A-Z0-9]{0,31}_[A-Z2-7]
 var ErrRedactionLimit = errors.New("redaction limit exceeded")
 
 type Context struct {
-	max         int
-	rawToToken  map[string]string
-	tokenToRaw  map[string]string
-	hits        map[string]int
-	fields      map[string]struct{}
-	restoreHits int
+	max            int
+	rawToToken     map[string]string
+	tokenToRaw     map[string]string
+	hits           map[string]int
+	fields         map[string]struct{}
+	restoreHits    int
+	restoredTokens map[string]struct{}
+	unresolvedHits int
+	degradedHits   int
 }
 
 func NewContext(max int) *Context {
 	return &Context{
-		max:        max,
-		rawToToken: make(map[string]string),
-		tokenToRaw: make(map[string]string),
-		hits:       make(map[string]int),
-		fields:     make(map[string]struct{}),
+		max:            max,
+		rawToToken:     make(map[string]string),
+		tokenToRaw:     make(map[string]string),
+		hits:           make(map[string]int),
+		fields:         make(map[string]struct{}),
+		restoredTokens: make(map[string]struct{}),
 	}
 }
 
@@ -72,11 +76,13 @@ func (c *Context) restoreText(text string, jsonString bool) string {
 	return placeholderPattern.ReplaceAllStringFunc(text, func(token string) string {
 		if raw, ok := c.tokenToRaw[token]; ok {
 			c.restoreHits++
+			c.restoredTokens[token] = struct{}{}
 			if jsonString {
 				return escapeJSONString(raw)
 			}
 			return raw
 		}
+		c.unresolvedHits++
 		return token
 	})
 }
@@ -108,6 +114,25 @@ func (c *Context) RedactionCount() int {
 
 func (c *Context) RestoreCount() int {
 	return c.restoreHits
+}
+
+func (c *Context) RestoreUniqueCount() int { return len(c.restoredTokens) }
+func (c *Context) UnresolvedCount() int    { return c.unresolvedHits }
+func (c *Context) DegradedCount() int      { return c.degradedHits }
+
+func (c *Context) RestoreStatus() string {
+	switch {
+	case c.unresolvedHits > 0 && c.restoreHits > 0:
+		return "partial"
+	case c.unresolvedHits > 0:
+		return "unresolved"
+	case c.restoreHits > 0:
+		return "restored"
+	case len(c.tokenToRaw) == 0:
+		return "no_sensitive_data"
+	default:
+		return "no_placeholders"
+	}
 }
 
 func (c *Context) tokenFor(label, raw string) (string, error) {

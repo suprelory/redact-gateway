@@ -12,6 +12,7 @@ const sampleEvent: GatewayEvent = {
   upstream_host: 'example.com', upstream_path: '/v1/chat/completions',
   flags: 'EG', streaming: true, status: 200, duration_ms: 123,
   request_bytes: 256, response_bytes: 128, redaction_count: 2, restore_count: 2,
+  restore_unique_count: 1, restore_unresolved_count: 0, restore_degraded_count: 0, restore_status: 'restored',
   rule_hits: { EMAIL: 2 },
   redaction_fields: ['$.messages[0].content', '$.tool.arguments'],
 }
@@ -73,7 +74,38 @@ describe('App', () => {
     expect(dialog.getByText('$.messages[0].content')).toBeInTheDocument()
     expect(dialog.getByText('$.tool.arguments')).toBeInTheDocument()
     expect(dialog.queryByText('GitHub Token')).not.toBeInTheDocument()
-    expect(dialog.getByText('详情仅展示规则和字段路径，不包含请求或响应中的敏感原文。')).toBeInTheDocument()
+    expect(dialog.getByText('详情仅展示统计、规则和字段路径，不包含请求或响应中的敏感原文。')).toBeInTheDocument()
+  })
+
+  it('distinguishes zero restorations from unresolved placeholders', async () => {
+    renderLogs([
+      { ...sampleEvent, restore_count: 0, restore_unique_count: 0, restore_status: 'no_placeholders' },
+      { ...sampleEvent, id: 2, request_id: 'unresolved', restore_count: 0, restore_unique_count: 0, restore_unresolved_count: 3, restore_status: 'unresolved' },
+    ])
+    expect(await screen.findByText('无需还原')).toBeInTheDocument()
+    expect(screen.getByText('存在未还原')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看请求 unresolved 的详情' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('响应中存在无法匹配原文的占位符。')).toBeInTheDocument()
+    expect(within(dialog.getByText('未还原次数').parentElement!).getByText('3')).toBeInTheDocument()
+  })
+
+  it('shows unique and degraded counts separately from occurrence counts', async () => {
+    renderLogs([{ ...sampleEvent, restore_count: 5, restore_unique_count: 2, restore_degraded_count: 1 }])
+    fireEvent.click(await screen.findByRole('button', { name: '查看请求 request-one 的详情' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(within(dialog.getByText('还原次数').parentElement!).getByText('5')).toBeInTheDocument()
+    expect(within(dialog.getByText('唯一还原数').parentElement!).getByText('2')).toBeInTheDocument()
+    expect(within(dialog.getByText('容错还原次数').parentElement!).getByText('1')).toBeInTheDocument()
+  })
+
+  it('does not invent diagnostic zeros for historical records', async () => {
+    renderLogs([{ ...sampleEvent, restore_status: 'unavailable', restore_unique_count: 0, restore_unresolved_count: 0 }])
+    fireEvent.click(await screen.findByRole('button', { name: '查看请求 request-one 的详情' }))
+    const dialog = within(screen.getByRole('dialog'))
+    expect(dialog.getByText('此记录未保存还原诊断信息，无法补录历史统计。')).toBeInTheDocument()
+    expect(within(dialog.getByText('唯一还原数').parentElement!).getByText('—')).toBeInTheDocument()
+    expect(within(dialog.getByText('未还原次数').parentElement!).getByText('—')).toBeInTheDocument()
   })
 
   it('keeps keyboard focus in the dialog and restores it after Escape', async () => {

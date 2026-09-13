@@ -33,6 +33,10 @@ export interface GatewayEvent {
   response_bytes: number
   redaction_count: number
   restore_count: number
+  restore_unique_count?: number
+  restore_unresolved_count?: number
+  restore_degraded_count?: number
+  restore_status?: string
   rule_hits: Record<string, number>
   redaction_fields: string[]
   error_class?: string

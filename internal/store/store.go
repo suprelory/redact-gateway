@@ -14,26 +14,30 @@ import (
 )
 
 type Event struct {
-	ID              int64          `json:"id"`
-	RequestID       string         `json:"request_id"`
-	Timestamp       string         `json:"timestamp"`
-	Method          string         `json:"method"`
-	Protocol        string         `json:"protocol"`
-	UpstreamScheme  string         `json:"upstream_scheme"`
-	UpstreamHost    string         `json:"upstream_host"`
-	UpstreamPort    string         `json:"upstream_port,omitempty"`
-	UpstreamPath    string         `json:"upstream_path"`
-	Flags           string         `json:"flags"`
-	Streaming       bool           `json:"streaming"`
-	Status          int            `json:"status"`
-	DurationMS      int64          `json:"duration_ms"`
-	RequestBytes    int64          `json:"request_bytes"`
-	ResponseBytes   int64          `json:"response_bytes"`
-	RedactionCount  int            `json:"redaction_count"`
-	RestoreCount    int            `json:"restore_count"`
-	RuleHits        map[string]int `json:"rule_hits"`
-	RedactionFields []string       `json:"redaction_fields"`
-	ErrorClass      string         `json:"error_class,omitempty"`
+	ID                     int64          `json:"id"`
+	RequestID              string         `json:"request_id"`
+	Timestamp              string         `json:"timestamp"`
+	Method                 string         `json:"method"`
+	Protocol               string         `json:"protocol"`
+	UpstreamScheme         string         `json:"upstream_scheme"`
+	UpstreamHost           string         `json:"upstream_host"`
+	UpstreamPort           string         `json:"upstream_port,omitempty"`
+	UpstreamPath           string         `json:"upstream_path"`
+	Flags                  string         `json:"flags"`
+	Streaming              bool           `json:"streaming"`
+	Status                 int            `json:"status"`
+	DurationMS             int64          `json:"duration_ms"`
+	RequestBytes           int64          `json:"request_bytes"`
+	ResponseBytes          int64          `json:"response_bytes"`
+	RedactionCount         int            `json:"redaction_count"`
+	RestoreCount           int            `json:"restore_count"`
+	RestoreUniqueCount     int            `json:"restore_unique_count"`
+	RestoreUnresolvedCount int            `json:"restore_unresolved_count"`
+	RestoreDegradedCount   int            `json:"restore_degraded_count"`
+	RestoreStatus          string         `json:"restore_status"`
+	RuleHits               map[string]int `json:"rule_hits"`
+	RedactionFields        []string       `json:"redaction_fields"`
+	ErrorClass             string         `json:"error_class,omitempty"`
 }
 
 type EventFilter struct {
@@ -133,6 +137,10 @@ CREATE TABLE IF NOT EXISTS events (
     response_bytes INTEGER NOT NULL,
     redaction_count INTEGER NOT NULL,
     restore_count INTEGER NOT NULL,
+    restore_unique_count INTEGER NOT NULL DEFAULT 0,
+    restore_unresolved_count INTEGER NOT NULL DEFAULT 0,
+    restore_degraded_count INTEGER NOT NULL DEFAULT 0,
+    restore_status TEXT NOT NULL DEFAULT 'unavailable',
     rule_hits_json TEXT NOT NULL,
     redaction_fields_json TEXT NOT NULL DEFAULT '[]',
     error_class TEXT NOT NULL
@@ -148,19 +156,19 @@ CREATE TABLE IF NOT EXISTS settings (
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
-	if err := s.ensureEventColumn(); err != nil {
+	if err := s.ensureEventColumns(); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (s *Store) ensureEventColumn() error {
+func (s *Store) ensureEventColumns() error {
 	rows, err := s.db.Query(`PRAGMA table_info(events)`)
 	if err != nil {
 		return fmt.Errorf("inspect events schema: %w", err)
 	}
 	defer rows.Close()
-	found := false
+	found := make(map[string]bool)
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var name, columnType string
@@ -168,18 +176,26 @@ func (s *Store) ensureEventColumn() error {
 		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			return fmt.Errorf("scan events schema: %w", err)
 		}
-		if name == "redaction_fields_json" {
-			found = true
-		}
+		found[name] = true
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate events schema: %w", err)
 	}
-	if found {
-		return nil
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close events schema: %w", err)
 	}
-	if _, err := s.db.Exec(`ALTER TABLE events ADD COLUMN redaction_fields_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
-		return fmt.Errorf("migrate events schema: %w", err)
+	for _, column := range []struct{ name, definition string }{
+		{"redaction_fields_json", "TEXT NOT NULL DEFAULT '[]'"},
+		{"restore_unique_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"restore_unresolved_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"restore_degraded_count", "INTEGER NOT NULL DEFAULT 0"},
+		{"restore_status", "TEXT NOT NULL DEFAULT 'unavailable'"},
+	} {
+		if !found[column.name] {
+			if _, err := s.db.Exec("ALTER TABLE events ADD COLUMN " + column.name + " " + column.definition); err != nil {
+				return fmt.Errorf("migrate events column %s: %w", column.name, err)
+			}
+		}
 	}
 	return nil
 }
@@ -219,6 +235,9 @@ ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = ex
 }
 
 func (s *Store) InsertEvent(ctx context.Context, event Event) error {
+	if event.RestoreStatus == "" {
+		event.RestoreStatus = "unavailable"
+	}
 	hits, err := json.Marshal(event.RuleHits)
 	if err != nil {
 		return fmt.Errorf("encode rule hits: %w", err)
@@ -234,12 +253,14 @@ INSERT INTO events (
     request_id, ts_ms, method, protocol, upstream_scheme, upstream_host,
     upstream_port, upstream_path, flags, streaming, status, duration_ms,
     request_bytes, response_bytes, redaction_count, restore_count,
+    restore_unique_count, restore_unresolved_count, restore_degraded_count, restore_status,
     rule_hits_json, redaction_fields_json, error_class
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RequestID, timestamp.UnixMilli(), event.Method, event.Protocol,
 		event.UpstreamScheme, event.UpstreamHost, event.UpstreamPort, event.UpstreamPath,
 		event.Flags, boolInt(event.Streaming), event.Status, event.DurationMS,
 		event.RequestBytes, event.ResponseBytes, event.RedactionCount, event.RestoreCount,
+		event.RestoreUniqueCount, event.RestoreUnresolvedCount, event.RestoreDegradedCount, event.RestoreStatus,
 		string(hits), encodeStringSlice(event.RedactionFields), event.ErrorClass,
 	)
 	if err != nil {
@@ -297,6 +318,7 @@ func (s *Store) QueryEvents(ctx context.Context, filter EventFilter) (EventPage,
 SELECT id, request_id, ts_ms, method, protocol, upstream_scheme, upstream_host,
        upstream_port, upstream_path, flags, streaming, status, duration_ms,
        request_bytes, response_bytes, redaction_count, restore_count,
+       restore_unique_count, restore_unresolved_count, restore_degraded_count, restore_status,
        rule_hits_json, redaction_fields_json, error_class
 FROM events` + where + " ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?"
 	args = append(args, result.Limit, (result.Page-1)*result.Limit)
@@ -317,7 +339,9 @@ FROM events` + where + " ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?"
 			&event.ID, &event.RequestID, &timestamp, &event.Method, &event.Protocol,
 			&event.UpstreamScheme, &event.UpstreamHost, &event.UpstreamPort, &event.UpstreamPath,
 			&event.Flags, &streaming, &event.Status, &event.DurationMS, &event.RequestBytes,
-			&event.ResponseBytes, &event.RedactionCount, &event.RestoreCount, &hitsJSON, &fieldsJSON,
+			&event.ResponseBytes, &event.RedactionCount, &event.RestoreCount,
+			&event.RestoreUniqueCount, &event.RestoreUnresolvedCount, &event.RestoreDegradedCount, &event.RestoreStatus,
+			&hitsJSON, &fieldsJSON,
 			&event.ErrorClass,
 		); err != nil {
 			return EventPage{}, fmt.Errorf("scan event: %w", err)

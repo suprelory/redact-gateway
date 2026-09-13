@@ -108,7 +108,7 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		RequestID: requestID, Timestamp: started.UTC().Format(time.RFC3339Nano), Method: request.Method,
 		UpstreamScheme: proxyRoute.Upstream.Scheme, UpstreamHost: proxyRoute.Upstream.Hostname(),
 		UpstreamPort: proxyRoute.Upstream.Port(), UpstreamPath: proxyRoute.Upstream.EscapedPath(),
-		Flags: proxyRoute.Flags.Raw,
+		Flags: proxyRoute.Flags.Raw, RestoreStatus: "not_processed",
 	}
 	if event.UpstreamPath == "" {
 		event.UpstreamPath = "/"
@@ -144,6 +144,18 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 
 	contextMap := redact.NewContext(p.cfg.MaxRedactions)
+	defer func() {
+		event.RestoreCount = contextMap.RestoreCount()
+		event.RestoreUniqueCount = contextMap.RestoreUniqueCount()
+		event.RestoreUnresolvedCount = contextMap.UnresolvedCount()
+		event.RestoreDegradedCount = contextMap.DegradedCount()
+		if event.RestoreStatus == "processed" {
+			event.RestoreStatus = contextMap.RestoreStatus()
+			if event.ErrorClass != "" || event.Status >= 400 {
+				event.RestoreStatus = "response_error"
+			}
+		}
+	}()
 	body, protocol, originalBytes, err := p.prepareRequestBody(request, proxyRoute, contextMap)
 	event.RequestBytes = originalBytes
 	event.Protocol = protocol
@@ -185,12 +197,14 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	event.Status = response.StatusCode
 	contentType := strings.ToLower(response.Header.Get("Content-Type"))
 	event.Streaming = strings.Contains(contentType, "text/event-stream")
+	if event.Streaming || isTextualContentType(contentType) {
+		event.RestoreStatus = "processed"
+	}
 	if event.Streaming {
 		event.ResponseBytes, event.ErrorClass = p.streamSSE(writer, request, response, contextMap)
 		if event.ErrorClass == "encoded_response" {
 			event.Status = http.StatusBadGateway
 		}
-		event.RestoreCount = contextMap.RestoreCount()
 		return
 	}
 	event.ResponseBytes, event.ErrorClass = p.writeNonStreaming(writer, response, contextMap)
@@ -198,7 +212,6 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	case "encoded_response", "response_read_failed", "response_too_large":
 		event.Status = http.StatusBadGateway
 	}
-	event.RestoreCount = contextMap.RestoreCount()
 }
 
 func (p *Proxy) prepareRequestBody(request *http.Request, proxyRoute route.ProxyRoute, contextMap *redact.Context) ([]byte, string, int64, error) {
@@ -302,7 +315,7 @@ func (p *Proxy) streamSSE(writer http.ResponseWriter, request *http.Request, res
 			flusher.Flush()
 		}
 	}
-	return written, ""
+	return written, restorer.ErrorClass()
 }
 
 func (p *Proxy) writeNonStreaming(writer http.ResponseWriter, response *http.Response, contextMap *redact.Context) (int64, string) {
