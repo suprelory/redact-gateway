@@ -1,10 +1,14 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
+import { FormEvent, useEffect, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   BarChart3,
   Check,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
   Clipboard,
   Eye,
   FileClock,
@@ -207,62 +211,109 @@ function Dashboard({ status }: { status?: GatewayStatus }) {
 }
 
 function Logs() {
-	const [search, setSearch] = useState('')
-	const [refreshInterval, setRefreshInterval] = useState<number | false>(5_000)
-	const [selectedEvent, setSelectedEvent] = useState<GatewayEvent | null>(null)
-	const eventsQuery = useQuery({ queryKey: ['events', 200], queryFn: () => api.events(200), refetchInterval: refreshInterval })
-  const events = useMemo(() => {
-    const needle = search.trim().toLowerCase()
-    if (!needle) return eventsQuery.data?.events ?? []
-    return (eventsQuery.data?.events ?? []).filter((event) =>
-      `${event.upstream_host} ${event.upstream_path} ${event.protocol} ${event.flags} ${event.status}`.toLowerCase().includes(needle),
-    )
-  }, [eventsQuery.data?.events, search])
-	return (
-		<section className="page full-height-page">
-			<PageHeader title="请求日志" meta={`${events.length} 条`} action={
-				<div className="refresh-controls">
-					<button
-						className="icon-button bordered"
-						title="立即刷新"
-						aria-label="立即刷新请求日志"
-						onClick={() => { void eventsQuery.refetch() }}
-						disabled={eventsQuery.isFetching}
-					>
-						<RefreshCw className={eventsQuery.isFetching ? 'spin' : undefined} />
-					</button>
-					<label className="refresh-select">
-						<span className="sr-only">请求日志刷新频率</span>
-						<select
-							aria-label="请求日志刷新频率"
-							value={refreshInterval === false ? 'manual' : String(refreshInterval)}
-							onChange={(event) => {
-								const value = event.target.value
-								setRefreshInterval(value === 'manual' ? false : Number(value))
-							}}
-						>
-							<option value="manual">手动刷新</option>
-							<option value="5000">自动刷新 · 5 秒</option>
-							<option value="10000">自动刷新 · 10 秒</option>
-							<option value="30000">自动刷新 · 30 秒</option>
-							<option value="60000">自动刷新 · 60 秒</option>
-						</select>
-					</label>
-				</div>
-			} />
+  const [search, setSearch] = useState('')
+  const [filter, setFilter] = useState({ page: 1, limit: 50, search: '' })
+  const [refreshInterval, setRefreshInterval] = useState<number | false>(5_000)
+  const [selectedEvent, setSelectedEvent] = useState<GatewayEvent | null>(null)
+  const table = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      const nextSearch = search.trim()
+      setFilter((current) => current.search === nextSearch ? current : { ...current, page: 1, search: nextSearch })
+    }, 300)
+    return () => window.clearTimeout(timer)
+  }, [search])
+  const eventsQuery = useQuery({
+    queryKey: ['events', filter.limit, filter.page, filter.search],
+    queryFn: () => api.events(filter.limit, filter.page, filter.search),
+    refetchInterval: refreshInterval,
+    placeholderData: keepPreviousData,
+  })
+  const data = eventsQuery.data
+  useEffect(() => {
+    if (data && eventsQuery.isSuccess && !eventsQuery.isFetching && !eventsQuery.isPlaceholderData && data.page !== filter.page) {
+      setFilter((current) => ({ ...current, page: data.page }))
+    }
+  }, [data, eventsQuery.isSuccess, eventsQuery.isFetching, eventsQuery.isPlaceholderData, filter.page])
+  useEffect(() => {
+    if (table.current) table.current.scrollTop = 0
+  }, [filter.page, filter.limit, filter.search])
+  const events = data?.events ?? []
+  const page = data?.page ?? filter.page
+  const pages = Math.max(1, Math.ceil((data?.total ?? 0) / (data?.limit ?? filter.limit)))
+  const first = events.length ? (page - 1) * (data?.limit ?? filter.limit) + 1 : 0
+  const last = events.length ? first + events.length - 1 : 0
+  const pagingDisabled = eventsQuery.isFetching || !data || search.trim() !== filter.search
+  const changePage = (nextPage: number) => setFilter((current) => ({ ...current, page: nextPage }))
+  return (
+    <section className="page full-height-page">
+      <PageHeader title="请求日志" meta={data ? `${data.total} 条` : '—'} action={
+        <div className="refresh-controls">
+          <button
+            className="icon-button bordered"
+            title="立即刷新"
+            aria-label="立即刷新请求日志"
+            onClick={() => { void eventsQuery.refetch() }}
+            disabled={eventsQuery.isFetching}
+          >
+            <RefreshCw className={eventsQuery.isFetching ? 'spin' : undefined} />
+          </button>
+          <label className="refresh-select">
+            <span className="sr-only">请求日志刷新频率</span>
+            <select
+              aria-label="请求日志刷新频率"
+              value={refreshInterval === false ? 'manual' : String(refreshInterval)}
+              onChange={(event) => {
+                const value = event.target.value
+                setRefreshInterval(value === 'manual' ? false : Number(value))
+              }}
+            >
+              <option value="manual">手动刷新</option>
+              <option value="5000">自动刷新 · 5 秒</option>
+              <option value="10000">自动刷新 · 10 秒</option>
+              <option value="30000">自动刷新 · 30 秒</option>
+              <option value="60000">自动刷新 · 60 秒</option>
+            </select>
+          </label>
+        </div>
+      } />
       <div className="toolbar">
-        <div className="search-field"><Search /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索上游、接口、协议或状态" /></div>
+        <div className="search-field"><Search /><input aria-label="搜索请求日志" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索上游、接口、协议或状态" /></div>
       </div>
+      {eventsQuery.isError && <ErrorBanner message="无法读取请求日志，请点击立即刷新重试。" />}
       <section className="panel log-panel">
-        <div className="table-wrap">
-          <table>
+        <div className="table-wrap" ref={table}>
+          <table aria-busy={eventsQuery.isFetching}>
             <thead><tr><th>时间</th><th>上游</th><th>接口</th><th>协议</th><th>规则</th><th>脱敏/还原</th><th>状态</th><th>耗时</th><th>详情</th></tr></thead>
             <tbody>
               {events.map((event) => <LogRow key={event.id} event={event} onDetails={() => setSelectedEvent(event)} />)}
-              {!events.length && <EmptyRow columns={9} />}
+              {!events.length && (eventsQuery.isPending || eventsQuery.isError
+                ? <tr><td className="empty-cell" colSpan={9}>{eventsQuery.isPending ? '正在加载请求日志…' : '请求日志加载失败'}</td></tr>
+                : <EmptyRow columns={9} />)}
             </tbody>
           </table>
         </div>
+        <nav className="pagination" aria-label="请求日志分页">
+          <span className="pagination-summary" aria-live="polite">
+            {eventsQuery.isPlaceholderData ? '正在加载请求日志…' : data ? `第 ${first}–${last} 条，共 ${data.total} 条` : '—'}
+          </span>
+          <div className="pagination-controls">
+            <label className="page-size">每页
+              <select aria-label="每页日志条数" value={filter.limit} onChange={(event) => setFilter((current) => ({ ...current, limit: Number(event.target.value), page: 1 }))}>
+                <option value="20">20 条</option>
+                <option value="50">50 条</option>
+                <option value="100">100 条</option>
+              </select>
+            </label>
+            <div className="page-navigation">
+              <button className="icon-button bordered" type="button" title="首页" aria-label="首页" disabled={pagingDisabled || page <= 1} onClick={() => changePage(1)}><ChevronsLeft /></button>
+              <button className="icon-button bordered" type="button" title="上一页" aria-label="上一页" disabled={pagingDisabled || page <= 1} onClick={() => changePage(page - 1)}><ChevronLeft /></button>
+              <span className="page-number">{data ? `第 ${page} / ${pages} 页` : `第 ${filter.page} 页`}</span>
+              <button className="icon-button bordered" type="button" title="下一页" aria-label="下一页" disabled={pagingDisabled || page >= pages} onClick={() => changePage(page + 1)}><ChevronRight /></button>
+              <button className="icon-button bordered" type="button" title="末页" aria-label="末页" disabled={pagingDisabled || page >= pages} onClick={() => changePage(pages)}><ChevronsRight /></button>
+            </div>
+          </div>
+        </nav>
       </section>
       {selectedEvent && <LogDetailDialog event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
     </section>

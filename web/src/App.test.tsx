@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -18,21 +18,34 @@ const sampleEvent: GatewayEvent = {
 
 const clients: QueryClient[] = []
 
-function renderLogs(events: GatewayEvent[]) {
+function renderLogs(events: GatewayEvent[], total = events.length) {
   saveToken('test-admin-token')
   vi.spyOn(api, 'status').mockResolvedValue({
     service: 'redact-gateway', version: 'test', proxy_addr: '127.0.0.1:8787',
     admin_addr: '127.0.0.1:8788', started_at: sampleEvent.timestamp, uptime_seconds: 60,
     in_flight: 0, allowed_hosts: 1, allow_private_upstreams: false, max_body_bytes: 1024,
   })
-  vi.spyOn(api, 'events').mockResolvedValue({ events })
+  vi.spyOn(api, 'events').mockResolvedValue({ events, total, page: 1, limit: 50 })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
   clients.push(client)
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/logs']}><App /></MemoryRouter></QueryClientProvider>)
   return client
 }
 
+const pagedEvents = Array.from({ length: 105 }, (_, index) => ({
+  ...sampleEvent, id: index + 1, request_id: `request-${index + 1}`,
+}))
+
+function renderPagedLogs() {
+  renderLogs(pagedEvents.slice(0, 50), pagedEvents.length)
+  vi.mocked(api.events).mockImplementation(async (limit = 50, page = 1) => ({
+    events: pagedEvents.slice((page - 1) * limit, page * limit),
+    total: pagedEvents.length, page, limit,
+  }))
+}
+
 afterEach(() => {
+  vi.useRealTimers()
   cleanup()
   clients.splice(0).forEach((client) => client.clear())
   vi.restoreAllMocks()
@@ -112,10 +125,105 @@ describe('App', () => {
   it('keeps the selected details open when refreshed results change', async () => {
     const client = renderLogs([sampleEvent])
     fireEvent.click(await screen.findByRole('button', { name: '查看请求 request-one 的详情' }))
-    act(() => { client.setQueryData(['events', 200], { events: [] }) })
+    act(() => { client.setQueryData(['events', 50, 1, ''], { events: [], total: 0, page: 1, limit: 50 }) })
     expect(within(screen.getByRole('dialog')).getByText('request-one')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '关闭请求详情' }))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
     expect(screen.getByText('暂无数据')).toBeInTheDocument()
+  })
+
+  it('navigates server pages and opens details for a record on a later page', async () => {
+    renderPagedLogs()
+    expect(await screen.findByText('第 1–50 条，共 105 条')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '首页' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(await screen.findByText('第 51–100 条，共 105 条')).toBeInTheDocument()
+    expect(api.events).toHaveBeenLastCalledWith(50, 2, '')
+    expect(screen.queryByRole('button', { name: '查看请求 request-1 的详情' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '查看请求 request-51 的详情' }))
+    expect(within(screen.getByRole('dialog')).getByText('request-51')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '关闭请求详情' }))
+    fireEvent.click(screen.getByRole('button', { name: '末页' }))
+    expect(await screen.findByText('第 101–105 条，共 105 条')).toBeInTheDocument()
+    expect(api.events).toHaveBeenLastCalledWith(50, 3, '')
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '末页' })).toBeDisabled()
+    fireEvent.click(screen.getByRole('button', { name: '上一页' }))
+    expect(await screen.findByText('第 51–100 条，共 105 条')).toBeInTheDocument()
+    await waitFor(() => expect(screen.getByRole('button', { name: '首页' })).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: '首页' }))
+    expect(await screen.findByText('第 1–50 条，共 105 条')).toBeInTheDocument()
+  })
+
+  it('returns to the first page when changing the page size', async () => {
+    renderPagedLogs()
+    await screen.findByText('第 1–50 条，共 105 条')
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    await screen.findByText('第 51–100 条，共 105 条')
+    fireEvent.change(screen.getByRole('combobox', { name: '每页日志条数' }), { target: { value: '20' } })
+    expect(await screen.findByText('第 1–20 条，共 105 条')).toBeInTheDocument()
+    expect(screen.getByText('第 1 / 6 页')).toBeInTheDocument()
+    expect(api.events).toHaveBeenLastCalledWith(20, 1, '')
+  })
+
+  it('searches all stored logs and resets to the first matching page', async () => {
+    renderPagedLogs()
+    await screen.findByText('第 1–50 条，共 105 条')
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    await screen.findByText('第 51–100 条，共 105 条')
+    vi.mocked(api.events).mockResolvedValue({
+      events: [{ ...sampleEvent, request_id: 'archived-request', upstream_host: 'archive.example.com' }],
+      total: 1, page: 1, limit: 50,
+    })
+    fireEvent.change(screen.getByRole('textbox', { name: '搜索请求日志' }), { target: { value: '  ARCHIVE  ' } })
+    expect(await screen.findByRole('button', { name: '查看请求 archived-request 的详情' })).toBeInTheDocument()
+    expect(api.events).toHaveBeenLastCalledWith(50, 1, 'ARCHIVE')
+    expect(screen.getByText('第 1–1 条，共 1 条')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
+  })
+
+  it('refreshes the current page manually and automatically', async () => {
+    renderPagedLogs()
+    await screen.findByText('第 1–50 条，共 105 条')
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    await screen.findByText('第 51–100 条，共 105 条')
+    const calls = vi.mocked(api.events).mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: '立即刷新请求日志' }))
+    await waitFor(() => expect(api.events).toHaveBeenCalledTimes(calls + 1))
+    expect(api.events).toHaveBeenLastCalledWith(50, 2, '')
+    await waitFor(() => expect(screen.getByRole('button', { name: '立即刷新请求日志' })).toBeEnabled())
+    fireEvent.change(screen.getByRole('combobox', { name: '请求日志刷新频率' }), { target: { value: 'manual' } })
+    vi.useFakeTimers()
+    vi.mocked(api.events).mockClear()
+    fireEvent.change(screen.getByRole('combobox', { name: '请求日志刷新频率' }), { target: { value: '10000' } })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+    expect(api.events).toHaveBeenCalledWith(50, 2, '')
+    expect(screen.getByText('第 2 / 3 页')).toBeInTheDocument()
+  })
+
+  it('accepts the server page correction when no matching records remain', async () => {
+    renderPagedLogs()
+    await screen.findByText('第 1–50 条，共 105 条')
+    vi.mocked(api.events).mockResolvedValue({ events: [], total: 0, page: 1, limit: 50 })
+    fireEvent.click(screen.getByRole('button', { name: '末页' }))
+    await waitFor(() => expect(api.events).toHaveBeenLastCalledWith(50, 1, ''))
+    expect(await screen.findByText('第 0–0 条，共 0 条')).toBeInTheDocument()
+    expect(screen.getByText('第 1 / 1 页')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '上一页' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '下一页' })).toBeDisabled()
+  })
+
+  it('shows a page load error and retries the requested page', async () => {
+    renderPagedLogs()
+    await screen.findByText('第 1–50 条，共 105 条')
+    vi.mocked(api.events).mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }))
+    expect(await screen.findByText('无法读取请求日志，请点击立即刷新重试。')).toBeInTheDocument()
+    expect(screen.getByText('第 2 页')).toBeInTheDocument()
+    expect(screen.queryByText('暂无数据')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '立即刷新请求日志' }))
+    expect(await screen.findByText('第 51–100 条，共 105 条')).toBeInTheDocument()
+    expect(api.events).toHaveBeenLastCalledWith(50, 2, '')
   })
 })

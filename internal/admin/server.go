@@ -75,13 +75,20 @@ func (s *Server) status(writer http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) events(writer http.ResponseWriter, request *http.Request) {
-	limit, _ := strconv.Atoi(request.URL.Query().Get("limit"))
-	events, err := s.store.Events(request.Context(), limit, strings.TrimSpace(request.URL.Query().Get("upstream")))
+	query := request.URL.Query()
+	limit, _ := strconv.Atoi(query.Get("limit"))
+	page, err := strconv.Atoi(query.Get("page"))
+	if err != nil {
+		page = 1
+	}
+	events, err := s.store.QueryEvents(request.Context(), store.EventFilter{
+		Limit: limit, Page: page, UpstreamHost: query.Get("upstream"), Search: query.Get("q"),
+	})
 	if err != nil {
 		respondError(writer, http.StatusInternalServerError, "query_failed", "failed to query request events")
 		return
 	}
-	respondJSON(writer, http.StatusOK, map[string]any{"events": events})
+	respondJSON(writer, http.StatusOK, events)
 }
 
 func (s *Server) stats(writer http.ResponseWriter, request *http.Request) {

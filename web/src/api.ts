@@ -1,4 +1,4 @@
-import type { GatewayEvent, GatewaySettings, GatewayStats, GatewayStatus, RuleInfo } from './types'
+import type { GatewayEventPage, GatewaySettings, GatewayStats, GatewayStatus, RuleInfo } from './types'
 
 const TOKEN_KEY = 'redact_gateway_admin_token'
 
@@ -40,7 +40,11 @@ async function request<T>(path: string, token = readToken(), init: RequestInit =
 
 export const api = {
   status: (token?: string) => request<GatewayStatus>('/api/v1/status', token),
-  events: (limit = 100) => request<{ events: GatewayEvent[] }>(`/api/v1/events?limit=${limit}`),
+  events: (limit = 100, page = 1, search = '') => {
+    const query = new URLSearchParams({ limit: String(limit), page: String(page) })
+    if (search) query.set('q', search)
+    return request<GatewayEventPage>(`/api/v1/events?${query}`)
+  },
   stats: (hours = 24) => request<GatewayStats>(`/api/v1/stats?hours=${hours}`),
 	rules: () => request<{ all_flags: string; rules: RuleInfo[] }>('/api/v1/rules'),
 	settings: (token?: string) => request<GatewaySettings>('/api/v1/settings', token),

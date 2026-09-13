@@ -38,6 +38,13 @@ export interface GatewayEvent {
   error_class?: string
 }
 
+export interface GatewayEventPage {
+  events: GatewayEvent[]
+  total: number
+  page: number
+  limit: number
+}
+
 export interface GatewayStats {
   overview: {
     requests: number

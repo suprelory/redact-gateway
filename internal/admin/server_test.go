@@ -2,6 +2,7 @@ package admin
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -72,5 +73,59 @@ func TestSettingsEndpointRejectsInvalidHost(t *testing.T) {
 	}
 	if len(proxy.AllowedHosts()) != 0 {
 		t.Fatalf("invalid update changed runtime hosts: %#v", proxy.AllowedHosts())
+	}
+}
+
+func TestEventsEndpointPagination(t *testing.T) {
+	eventStore, err := store.Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventStore.Close()
+	for _, event := range []store.Event{
+		{RequestID: "oldest", UpstreamHost: "api.example.com", UpstreamPath: "/v1/messages"},
+		{RequestID: "middle", UpstreamHost: "api.example.com", UpstreamPath: "/v1/messages"},
+		{RequestID: "newest", UpstreamHost: "other.example.com", UpstreamPath: "/v1/responses"},
+	} {
+		event.Timestamp = "2026-09-13T12:00:00Z"
+		if err := eventStore.InsertEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := NewServer("test-token", nil, eventStore).Handler()
+	tests := []struct {
+		query              string
+		total, page, limit int
+		requestIDs         []string
+	}{
+		{"", 3, 1, 100, []string{"newest", "middle", "oldest"}},
+		{"?limit=1&page=2", 3, 2, 1, []string{"middle"}},
+		{"?limit=1&page=2&q=MESSAGE&upstream=api.example.com", 2, 2, 1, []string{"oldest"}},
+		{"?limit=2&page=999", 3, 2, 2, []string{"oldest"}},
+		{"?limit=501&page=-1", 3, 1, 100, []string{"newest", "middle", "oldest"}},
+		{"?limit=invalid&page=99999999999999999999999", 3, 1, 100, []string{"newest", "middle", "oldest"}},
+		{"?page=4&q=missing", 0, 1, 100, []string{}},
+	}
+	for _, test := range tests {
+		t.Run(test.query, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, "http://gateway/api/v1/events"+test.query, nil)
+			request.Header.Set("X-Redact-Token", "test-token")
+			recorder := httptest.NewRecorder()
+			handler.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("status=%d: %s", recorder.Code, recorder.Body.String())
+			}
+			var result store.EventPage
+			if err := json.NewDecoder(recorder.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			ids := make([]string, 0, len(result.Events))
+			for _, event := range result.Events {
+				ids = append(ids, event.RequestID)
+			}
+			if result.Total != test.total || result.Page != test.page || result.Limit != test.limit || result.Events == nil || !reflect.DeepEqual(ids, test.requestIDs) {
+				t.Fatalf("unexpected page: %+v", result)
+			}
+		})
 	}
 }

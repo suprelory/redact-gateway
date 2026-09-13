@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -33,6 +34,20 @@ type Event struct {
 	RuleHits        map[string]int `json:"rule_hits"`
 	RedactionFields []string       `json:"redaction_fields"`
 	ErrorClass      string         `json:"error_class,omitempty"`
+}
+
+type EventFilter struct {
+	Limit        int
+	Page         int
+	UpstreamHost string
+	Search       string
+}
+
+type EventPage struct {
+	Events []Event `json:"events"`
+	Total  int     `json:"total"`
+	Page   int     `json:"page"`
+	Limit  int     `json:"limit"`
 }
 
 type Overview struct {
@@ -234,30 +249,64 @@ INSERT INTO events (
 }
 
 func (s *Store) Events(ctx context.Context, limit int, upstreamHost string) ([]Event, error) {
-	if limit <= 0 || limit > 500 {
-		limit = 100
+	result, err := s.QueryEvents(ctx, EventFilter{Limit: limit, UpstreamHost: upstreamHost})
+	return result.Events, err
+}
+
+func (s *Store) QueryEvents(ctx context.Context, filter EventFilter) (EventPage, error) {
+	if filter.Limit <= 0 || filter.Limit > 500 {
+		filter.Limit = 100
 	}
+	if filter.Page < 1 {
+		filter.Page = 1
+	}
+	conditions := make([]string, 0, 2)
+	args := make([]any, 0, 4)
+	if upstream := strings.TrimSpace(filter.UpstreamHost); upstream != "" {
+		conditions = append(conditions, "upstream_host = ?")
+		args = append(args, upstream)
+	}
+	if search := strings.ToLower(strings.TrimSpace(filter.Search)); search != "" {
+		conditions = append(conditions, `instr(lower(upstream_host || ' ' || upstream_path || ' ' || protocol || ' ' || flags || ' ' || CAST(status AS TEXT)), ?) > 0`)
+		args = append(args, search)
+	}
+	where := ""
+	if len(conditions) > 0 {
+		where = " WHERE " + strings.Join(conditions, " AND ")
+	}
+
+	// Count and read the page from the same snapshot while requests are arriving.
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return EventPage{}, fmt.Errorf("begin events query: %w", err)
+	}
+	defer tx.Rollback()
+	result := EventPage{Page: filter.Page, Limit: filter.Limit, Events: make([]Event, 0, filter.Limit)}
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM events"+where, args...).Scan(&result.Total); err != nil {
+		return EventPage{}, fmt.Errorf("count events: %w", err)
+	}
+	pages := 1
+	if result.Total > 0 {
+		pages = 1 + (result.Total-1)/result.Limit
+	}
+	if result.Page > pages {
+		result.Page = pages
+	}
+
 	query := `
 SELECT id, request_id, ts_ms, method, protocol, upstream_scheme, upstream_host,
        upstream_port, upstream_path, flags, streaming, status, duration_ms,
        request_bytes, response_bytes, redaction_count, restore_count,
        rule_hits_json, redaction_fields_json, error_class
-FROM events`
-	args := make([]any, 0, 2)
-	if upstreamHost != "" {
-		query += " WHERE upstream_host = ?"
-		args = append(args, upstreamHost)
-	}
-	query += " ORDER BY ts_ms DESC LIMIT ?"
-	args = append(args, limit)
+FROM events` + where + " ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?"
+	args = append(args, result.Limit, (result.Page-1)*result.Limit)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("query events: %w", err)
+		return EventPage{}, fmt.Errorf("query events: %w", err)
 	}
 	defer rows.Close()
 
-	events := make([]Event, 0, limit)
 	for rows.Next() {
 		var event Event
 		var timestamp int64
@@ -271,7 +320,7 @@ FROM events`
 			&event.ResponseBytes, &event.RedactionCount, &event.RestoreCount, &hitsJSON, &fieldsJSON,
 			&event.ErrorClass,
 		); err != nil {
-			return nil, fmt.Errorf("scan event: %w", err)
+			return EventPage{}, fmt.Errorf("scan event: %w", err)
 		}
 		event.Timestamp = time.UnixMilli(timestamp).UTC().Format(time.RFC3339Nano)
 		event.Streaming = streaming != 0
@@ -281,12 +330,18 @@ FROM events`
 		if err := json.Unmarshal([]byte(fieldsJSON), &event.RedactionFields); err != nil || event.RedactionFields == nil {
 			event.RedactionFields = []string{}
 		}
-		events = append(events, event)
+		result.Events = append(result.Events, event)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate events: %w", err)
+		return EventPage{}, fmt.Errorf("iterate events: %w", err)
 	}
-	return events, nil
+	if err := rows.Close(); err != nil {
+		return EventPage{}, fmt.Errorf("close events query: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return EventPage{}, fmt.Errorf("finish events query: %w", err)
+	}
+	return result, nil
 }
 
 func (s *Store) Stats(ctx context.Context, since time.Time) (Stats, error) {
