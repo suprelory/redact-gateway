@@ -134,6 +134,7 @@ func (c *Context) RestoreCount() int {
 func (c *Context) RestoreUniqueCount() int { return len(c.restoredTokens) }
 func (c *Context) UnresolvedCount() int    { return c.unresolvedHits }
 func (c *Context) DegradedCount() int      { return c.degradedHits }
+func (c *Context) HasMappings() bool       { return len(c.tokenToRaw) > 0 }
 
 func (c *Context) RestoreStatus() string {
 	switch {

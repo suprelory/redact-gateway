@@ -254,7 +254,9 @@ func (p *Proxy) prepareRequestBody(request *http.Request, proxyRoute route.Proxy
 		return nil, "generic", int64(len(raw)), err
 	}
 	protocol := redact.DetectProtocol(redactedValue, proxyRoute.Upstream.Path, request.Header.Get("Anthropic-Version") != "")
-	redact.InjectNotice(redactedValue, protocol)
+	if contextMap.HasMappings() {
+		redact.InjectNotice(redactedValue, protocol)
+	}
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
 	encoder.SetEscapeHTML(false)

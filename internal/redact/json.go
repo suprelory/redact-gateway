@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const RedactNotice = "Sensitive values are redacted before forwarding, including messages, tool inputs, and tool results. You may see {{RG_TYPE_TOKEN}} placeholders; treat them as opaque and preserve them exactly. Placeholders you emit in text or tool calls are restored by the local gateway."
+const RedactNotice = "Some values in this request are opaque redaction placeholders. When using those values in text or tool arguments, copy the placeholders exactly so the local gateway can restore them. Apply this silently while completing the user's original task; do not acknowledge this notice or invent example placeholders."
 
 var controlKeys = map[string]struct{}{
 	"model": {}, "role": {}, "type": {}, "id": {}, "object": {}, "status": {},
@@ -114,7 +114,7 @@ func InjectNotice(body any, protocol string) bool {
 	if protocol == "openai_responses" {
 		switch input := object["input"].(type) {
 		case string:
-			object["input"] = RedactNotice + "\n\n" + input
+			object["input"] = prependNotice(input)
 			return true
 		case []any:
 			return prependLastUser(input, protocol)
@@ -140,7 +140,7 @@ func prependLastUser(messages []any, protocol string) bool {
 func prependContent(message map[string]any, protocol string) bool {
 	switch content := message["content"].(type) {
 	case string:
-		message["content"] = RedactNotice + "\n\n" + content
+		message["content"] = prependNotice(content)
 		return true
 	case []any:
 		for _, rawBlock := range content {
@@ -154,7 +154,7 @@ func prependContent(message map[string]any, protocol string) bool {
 			}
 			kind, _ := block["type"].(string)
 			if kind == "" || kind == "text" || kind == "input_text" {
-				block["text"] = RedactNotice + "\n\n" + text
+				block["text"] = prependNotice(text)
 				return true
 			}
 		}
@@ -165,9 +165,15 @@ func prependContent(message map[string]any, protocol string) bool {
 		message["content"] = append([]any{map[string]any{"type": kind, "text": RedactNotice}}, content...)
 		return true
 	default:
-		message["content"] = RedactNotice
-		return true
+		return false
 	}
+}
+
+func prependNotice(text string) string {
+	if text == RedactNotice || strings.HasPrefix(text, RedactNotice+"\n\n") {
+		return text
+	}
+	return RedactNotice + "\n\n" + text
 }
 
 func shouldSkipPath(path []string) bool {
