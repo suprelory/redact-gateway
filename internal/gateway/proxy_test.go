@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"redact-gateway/internal/config"
-	"redact-gateway/internal/store"
+	"github.com/suprelory/redact-gateway/internal/config"
+	"github.com/suprelory/redact-gateway/internal/store"
 )
 
 func TestProxyRedactsAndRestoresAgainstRealUpstream(t *testing.T) {

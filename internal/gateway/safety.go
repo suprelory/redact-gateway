@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"redact-gateway/internal/config"
+	"github.com/suprelory/redact-gateway/internal/config"
 )
 
 func newHTTPClient(cfg config.Config) *http.Client {

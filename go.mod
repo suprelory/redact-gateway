@@ -1,4 +1,4 @@
-module redact-gateway
+module github.com/suprelory/redact-gateway
 
 go 1.24.0
 

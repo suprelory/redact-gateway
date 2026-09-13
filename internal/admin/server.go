@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"redact-gateway/internal/gateway"
-	"redact-gateway/internal/route"
-	"redact-gateway/internal/store"
+	"github.com/suprelory/redact-gateway/internal/gateway"
+	"github.com/suprelory/redact-gateway/internal/route"
+	"github.com/suprelory/redact-gateway/internal/store"
 )
 
 //go:embed web

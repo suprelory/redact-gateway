@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"redact-gateway/internal/config"
-	"redact-gateway/internal/redact"
-	"redact-gateway/internal/route"
-	"redact-gateway/internal/store"
+	"github.com/suprelory/redact-gateway/internal/config"
+	"github.com/suprelory/redact-gateway/internal/redact"
+	"github.com/suprelory/redact-gateway/internal/route"
+	"github.com/suprelory/redact-gateway/internal/store"
 )
 
 type Status struct {

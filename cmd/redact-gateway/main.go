@@ -12,10 +12,10 @@ import (
 	"syscall"
 	"time"
 
-	"redact-gateway/internal/admin"
-	"redact-gateway/internal/config"
-	"redact-gateway/internal/gateway"
-	"redact-gateway/internal/store"
+	"github.com/suprelory/redact-gateway/internal/admin"
+	"github.com/suprelory/redact-gateway/internal/config"
+	"github.com/suprelory/redact-gateway/internal/gateway"
+	"github.com/suprelory/redact-gateway/internal/store"
 )
 
 var (
