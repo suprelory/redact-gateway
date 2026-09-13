@@ -1,6 +1,6 @@
-import { FormEvent, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Activity,
   BarChart3,
@@ -11,8 +11,9 @@ import {
   KeyRound,
   LogOut,
   Moon,
-  RefreshCw,
-  Search,
+	RefreshCw,
+	Save,
+	Search,
   Settings,
   ShieldCheck,
   Sun,
@@ -242,34 +243,76 @@ function Rules() {
 }
 
 function RuntimeSettings({ status }: { status?: GatewayStatus }) {
-  const [gatewayBase, setGatewayBase] = useState(() => `http://${window.location.hostname || '127.0.0.1'}:8787`)
-  const examples = [
-    { label: 'OpenAI 全规则', value: `${gatewayBase}/$https://api.openai.com/v1` },
-    { label: 'OpenAI 常用规则', value: `${gatewayBase}/HPSE$https://api.openai.com/v1` },
-    { label: 'Anthropic', value: `${gatewayBase}/PSE$https://api.anthropic.com` },
-  ]
-  return (
-    <section className="page">
-      <PageHeader title="运行设置" meta="只读运行时信息" />
-      <section className="panel settings-band">
-        <PanelTitle title="网关地址" />
-        <label className="field-label" htmlFor="gateway-base">数据面基础地址</label>
-        <input id="gateway-base" className="plain-input" value={gatewayBase} onChange={(event) => setGatewayBase(event.target.value.replace(/\/$/, ''))} />
-        <div className="copy-list">
-          {examples.map((example) => <CopyField key={example.label} {...example} />)}
-        </div>
-      </section>
-      <section className="panel settings-band">
-        <PanelTitle title="安全边界" />
-        <dl className="definition-grid">
-          <div><dt>请求体上限</dt><dd>{formatBytes(status?.max_body_bytes ?? 0)}</dd></div>
-          <div><dt>上游白名单</dt><dd>{status?.allowed_hosts ? `${status.allowed_hosts} 个域名` : '未配置'}</dd></div>
-          <div><dt>私有网络上游</dt><dd>{status?.allow_private_upstreams ? '允许' : '阻断'}</dd></div>
-          <div><dt>代理监听</dt><dd><code>{status?.proxy_addr ?? '127.0.0.1:8787'}</code></dd></div>
-        </dl>
-      </section>
-    </section>
-  )
+	const queryClient = useQueryClient()
+	const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: () => api.settings() })
+	const [allowedHosts, setAllowedHosts] = useState('')
+	const saveMutation = useMutation({
+		mutationFn: (hosts: string[]) => api.updateSettings({ allowed_hosts: hosts }),
+		onSuccess: (settings) => {
+			setAllowedHosts(settings.allowed_hosts.join('\n'))
+			queryClient.setQueryData(['settings'], settings)
+			queryClient.invalidateQueries({ queryKey: ['status'] })
+		},
+	})
+	useEffect(() => {
+		if (settingsQuery.data) setAllowedHosts(settingsQuery.data.allowed_hosts.join('\n'))
+	}, [settingsQuery.data])
+	const saveAllowedHosts = (event: FormEvent) => {
+		event.preventDefault()
+		const hosts = allowedHosts.split(/[\r\n,]+/).map((host) => host.trim()).filter(Boolean)
+		saveMutation.mutate(hosts)
+	}
+	const [gatewayBase, setGatewayBase] = useState(() => `http://${window.location.hostname || '127.0.0.1'}:8787`)
+	const examples = [
+		{ label: 'OpenAI 全规则', value: `${gatewayBase}/$https://api.openai.com/v1` },
+		{ label: 'OpenAI 常用规则', value: `${gatewayBase}/HPSE$https://api.openai.com/v1` },
+		{ label: 'Anthropic', value: `${gatewayBase}/PSE$https://api.anthropic.com` },
+	]
+	return (
+		<section className="page">
+			<PageHeader title="运行设置" meta="运行时信息" />
+			<section className="panel settings-band">
+				<PanelTitle title="上游白名单" />
+				<form className="settings-form" onSubmit={saveAllowedHosts}>
+					<label className="field-label" htmlFor="allowed-hosts">允许的上游域名</label>
+					<textarea
+						id="allowed-hosts"
+						className="plain-input settings-textarea"
+						value={allowedHosts}
+						onChange={(event) => setAllowedHosts(event.target.value)}
+						placeholder="api.openai.com\napi.anthropic.com"
+						disabled={settingsQuery.isPending || saveMutation.isPending}
+					/>
+					<p className="field-help">每行一个域名。留空表示允许所有公网 HTTP/HTTPS 上游，私有地址仍受安全策略限制。</p>
+					{settingsQuery.isError && <ErrorBanner message="无法读取上游白名单。" />}
+					{saveMutation.isError && <ErrorBanner message={saveMutation.error instanceof Error ? saveMutation.error.message : '保存上游白名单失败。'} />}
+					<div className="settings-actions">
+						<button className="primary-button action-button" type="submit" disabled={settingsQuery.isPending || saveMutation.isPending}>
+							<Save />{saveMutation.isPending ? '保存中' : '保存白名单'}
+						</button>
+						{saveMutation.isSuccess && <span className="success-message"><Check />已保存并立即生效</span>}
+					</div>
+				</form>
+			</section>
+			<section className="panel settings-band">
+				<PanelTitle title="网关地址" />
+				<label className="field-label" htmlFor="gateway-base">数据面基础地址</label>
+				<input id="gateway-base" className="plain-input" value={gatewayBase} onChange={(event) => setGatewayBase(event.target.value.replace(/\/$/, ''))} />
+				<div className="copy-list">
+					{examples.map((example) => <CopyField key={example.label} {...example} />)}
+				</div>
+			</section>
+			<section className="panel settings-band">
+				<PanelTitle title="安全边界" />
+				<dl className="definition-grid">
+					<div><dt>请求体上限</dt><dd>{formatBytes(status?.max_body_bytes ?? 0)}</dd></div>
+					<div><dt>上游白名单</dt><dd>{status?.allowed_hosts ? `${status.allowed_hosts} 个域名` : '未配置'}</dd></div>
+					<div><dt>私有网络上游</dt><dd>{status?.allow_private_upstreams ? '允许' : '阻断'}</dd></div>
+					<div><dt>代理监听</dt><dd><code>{status?.proxy_addr ?? '127.0.0.1:8787'}</code></dd></div>
+				</dl>
+			</section>
+		</section>
+	)
 }
 
 function MetricCard({ label, value, icon: Icon, tone }: { label: string; value: number; icon: typeof Activity; tone: string }) {

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 
@@ -98,5 +99,45 @@ func TestPrivateUpstreamBlockedByDefault(t *testing.T) {
 	events, err := eventStore.Events(ctx, 10, "")
 	if err != nil || len(events) != 1 || events[0].ErrorClass != "upstream_blocked" {
 		t.Fatalf("blocked request not recorded: events=%+v err=%v", events, err)
+	}
+}
+
+func TestAllowedHostsUpdateTakesEffectImmediately(t *testing.T) {
+	t.Parallel()
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+
+	dataDir := t.TempDir()
+	eventStore, err := store.Open(dataDir, 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventStore.Close()
+	cfg := config.Config{
+		MaxBodyBytes: 1024, MaxRedactions: 10, CORSOrigin: "*", AllowPrivateHosts: true,
+		AllowedHosts: []string{"blocked.example"},
+	}
+	proxy := NewProxy(cfg, eventStore, slog.New(slog.NewTextHandler(io.Discard, nil)), "test")
+
+	request := httptest.NewRequest(http.MethodGet, "http://gateway/$"+upstream.URL+"/v1/models", nil)
+	recorder := httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("expected initial request to be blocked, got %d", recorder.Code)
+	}
+
+	parsedUpstream, err := url.Parse(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proxy.SetAllowedHosts([]string{parsedUpstream.Hostname()})
+
+	request = httptest.NewRequest(http.MethodGet, "http://gateway/$"+upstream.URL+"/v1/models", nil)
+	recorder = httptest.NewRecorder()
+	proxy.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("expected updated allowlist to permit request, got %d: %s", recorder.Code, recorder.Body.String())
 	}
 }

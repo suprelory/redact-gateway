@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/suprelory/redact-gateway/internal/config"
 	"github.com/suprelory/redact-gateway/internal/gateway"
 	"github.com/suprelory/redact-gateway/internal/route"
 	"github.com/suprelory/redact-gateway/internal/store"
@@ -20,10 +22,11 @@ import (
 var webAssets embed.FS
 
 type Server struct {
-	token string
-	proxy *gateway.Proxy
-	store *store.Store
-	web   http.Handler
+	token      string
+	proxy      *gateway.Proxy
+	store      *store.Store
+	web        http.Handler
+	settingsMu sync.Mutex
 }
 
 type ruleInfo struct {
@@ -31,6 +34,10 @@ type ruleInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Default     bool   `json:"default"`
+}
+
+type settingsResponse struct {
+	AllowedHosts []string `json:"allowed_hosts"`
 }
 
 func NewServer(token string, proxy *gateway.Proxy, eventStore *store.Store) *Server {
@@ -57,6 +64,8 @@ func (s *Server) Handler() http.Handler {
 	mux.Handle("GET /api/v1/events", s.auth(http.HandlerFunc(s.events)))
 	mux.Handle("GET /api/v1/stats", s.auth(http.HandlerFunc(s.stats)))
 	mux.Handle("GET /api/v1/rules", s.auth(http.HandlerFunc(s.rules)))
+	mux.Handle("GET /api/v1/settings", s.auth(http.HandlerFunc(s.settings)))
+	mux.Handle("PUT /api/v1/settings", s.auth(http.HandlerFunc(s.updateSettings)))
 	mux.HandleFunc("/", s.serveWeb)
 	return securityHeaders(mux)
 }
@@ -99,6 +108,36 @@ func (s *Server) rules(writer http.ResponseWriter, _ *http.Request) {
 		{Flag: "G", Name: "凭据规则包", Description: "私钥、JWT、云密钥、GitHub/GitLab Token 和连接串", Default: true},
 	}
 	respondJSON(writer, http.StatusOK, map[string]any{"all_flags": route.AllFlagLetters, "rules": rules})
+}
+
+func (s *Server) settings(writer http.ResponseWriter, _ *http.Request) {
+	respondJSON(writer, http.StatusOK, settingsResponse{AllowedHosts: s.proxy.AllowedHosts()})
+}
+
+func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Request) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+
+	var input struct {
+		AllowedHosts *[]string `json:"allowed_hosts"`
+	}
+	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64*1024))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil || input.AllowedHosts == nil {
+		respondError(writer, http.StatusBadRequest, "invalid_settings", "allowed_hosts must be a JSON array")
+		return
+	}
+	hosts, err := config.NormalizeAllowedHosts(*input.AllowedHosts)
+	if err != nil {
+		respondError(writer, http.StatusBadRequest, "invalid_allowed_hosts", err.Error())
+		return
+	}
+	if err := s.store.SaveAllowedHosts(request.Context(), hosts); err != nil {
+		respondError(writer, http.StatusInternalServerError, "settings_save_failed", "failed to save gateway settings")
+		return
+	}
+	s.proxy.SetAllowedHosts(hosts)
+	respondJSON(writer, http.StatusOK, settingsResponse{AllowedHosts: hosts})
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {

@@ -1,4 +1,4 @@
-import type { GatewayEvent, GatewayStats, GatewayStatus, RuleInfo } from './types'
+import type { GatewayEvent, GatewaySettings, GatewayStats, GatewayStatus, RuleInfo } from './types'
 
 const TOKEN_KEY = 'redact_gateway_admin_token'
 
@@ -22,10 +22,13 @@ export function clearToken(): void {
   sessionStorage.removeItem(TOKEN_KEY)
 }
 
-async function request<T>(path: string, token = readToken()): Promise<T> {
-  const response = await fetch(path, {
-    headers: token ? { 'X-Redact-Token': token } : undefined,
-  })
+async function request<T>(path: string, token = readToken(), init: RequestInit = {}): Promise<T> {
+	const headers = new Headers(init.headers)
+	if (token) headers.set('X-Redact-Token', token)
+	const response = await fetch(path, {
+		...init,
+		headers,
+	})
   if (!response.ok) {
     const body = await response.json().catch(() => null) as { error?: { message?: string } } | null
     const error = new Error(body?.error?.message || `HTTP ${response.status}`)
@@ -39,5 +42,11 @@ export const api = {
   status: (token?: string) => request<GatewayStatus>('/api/v1/status', token),
   events: (limit = 100) => request<{ events: GatewayEvent[] }>(`/api/v1/events?limit=${limit}`),
   stats: (hours = 24) => request<GatewayStats>(`/api/v1/stats?hours=${hours}`),
-  rules: () => request<{ all_flags: string; rules: RuleInfo[] }>('/api/v1/rules'),
+	rules: () => request<{ all_flags: string; rules: RuleInfo[] }>('/api/v1/rules'),
+	settings: (token?: string) => request<GatewaySettings>('/api/v1/settings', token),
+	updateSettings: (settings: GatewaySettings, token?: string) => request<GatewaySettings>('/api/v1/settings', token, {
+		method: 'PUT',
+		headers: { 'Content-Type': 'application/json' },
+		body: JSON.stringify(settings),
+	}),
 }

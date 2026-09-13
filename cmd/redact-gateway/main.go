@@ -51,6 +51,16 @@ func run() error {
 		return err
 	}
 	defer eventStore.Close()
+	persistedHosts, found, err := eventStore.LoadAllowedHosts(context.Background())
+	if err != nil {
+		return err
+	}
+	if found {
+		cfg.AllowedHosts, err = config.NormalizeAllowedHosts(persistedHosts)
+		if err != nil {
+			return fmt.Errorf("persisted allowed hosts: %w", err)
+		}
+	}
 
 	proxy := gateway.NewProxy(cfg, eventStore, logger, version)
 	adminServer := admin.NewServer(cfg.AdminToken, proxy, eventStore)

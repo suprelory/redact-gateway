@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,20 +36,41 @@ type Status struct {
 }
 
 type Proxy struct {
-	cfg       config.Config
-	store     *store.Store
-	client    *http.Client
-	logger    *slog.Logger
-	startedAt time.Time
-	version   string
-	inFlight  atomic.Int64
+	cfg          config.Config
+	store        *store.Store
+	client       *http.Client
+	logger       *slog.Logger
+	startedAt    time.Time
+	version      string
+	inFlight     atomic.Int64
+	settingsMu   sync.RWMutex
+	allowedHosts []string
 }
 
 func NewProxy(cfg config.Config, eventStore *store.Store, logger *slog.Logger, version string) *Proxy {
 	return &Proxy{
 		cfg: cfg, store: eventStore, client: newHTTPClient(cfg), logger: logger,
-		startedAt: time.Now(), version: version,
+		startedAt: time.Now(), version: version, allowedHosts: cloneHosts(cfg.AllowedHosts),
 	}
+}
+
+func (p *Proxy) AllowedHosts() []string {
+	p.settingsMu.RLock()
+	defer p.settingsMu.RUnlock()
+	return cloneHosts(p.allowedHosts)
+}
+
+func (p *Proxy) SetAllowedHosts(hosts []string) {
+	p.settingsMu.Lock()
+	p.allowedHosts = cloneHosts(hosts)
+	p.settingsMu.Unlock()
+}
+
+func cloneHosts(hosts []string) []string {
+	if hosts == nil {
+		return []string{}
+	}
+	return append([]string(nil), hosts...)
 }
 
 func (p *Proxy) Status() Status {
@@ -57,7 +79,7 @@ func (p *Proxy) Status() Status {
 		ProxyAddr: p.cfg.ListenAddr, AdminAddr: p.cfg.AdminAddr,
 		StartedAt:    p.startedAt.UTC().Format(time.RFC3339),
 		UptimeSecond: int64(time.Since(p.startedAt).Seconds()),
-		InFlight:     p.inFlight.Load(), AllowedHosts: len(p.cfg.AllowedHosts),
+		InFlight:     p.inFlight.Load(), AllowedHosts: len(p.AllowedHosts()),
 		AllowPrivate: p.cfg.AllowPrivateHosts, MaxBodyBytes: p.cfg.MaxBodyBytes,
 	}
 }
@@ -106,7 +128,9 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	defer record()
 
-	if err := validateUpstream(request.Context(), proxyRoute.Upstream, p.cfg); err != nil {
+	validationConfig := p.cfg
+	validationConfig.AllowedHosts = p.AllowedHosts()
+	if err := validateUpstream(request.Context(), proxyRoute.Upstream, validationConfig); err != nil {
 		event.Status = http.StatusForbidden
 		event.ErrorClass = "upstream_blocked"
 		writeGatewayError(writer, event.Status, event.ErrorClass, err.Error(), p.cfg.CORSOrigin)

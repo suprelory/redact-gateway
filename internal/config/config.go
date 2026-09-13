@@ -4,10 +4,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"unicode"
 )
 
 const (
@@ -40,11 +42,16 @@ func Load() (Config, error) {
 		CORSOrigin:        envString("REDACT_CORS_ORIGIN", "*"),
 	}
 
+	var configuredHosts []string
 	for _, host := range strings.Split(os.Getenv("REDACT_ALLOWED_HOSTS"), ",") {
-		host = strings.ToLower(strings.TrimSpace(host))
-		if host != "" {
-			cfg.AllowedHosts = append(cfg.AllowedHosts, host)
+		if strings.TrimSpace(host) != "" {
+			configuredHosts = append(configuredHosts, host)
 		}
+	}
+	var err error
+	cfg.AllowedHosts, err = NormalizeAllowedHosts(configuredHosts)
+	if err != nil {
+		return Config{}, fmt.Errorf("REDACT_ALLOWED_HOSTS: %w", err)
 	}
 
 	if cfg.MaxBodyBytes <= 0 || cfg.MaxRedactions <= 0 {
@@ -63,6 +70,53 @@ func Load() (Config, error) {
 	}
 	cfg.AdminToken = token
 	return cfg, nil
+}
+
+// NormalizeAllowedHosts validates and canonicalizes host names used by the
+// upstream allowlist. Empty input is valid and means all public hosts are
+// allowed, matching the gateway's existing behavior.
+func NormalizeAllowedHosts(hosts []string) ([]string, error) {
+	normalized := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
+	for index, raw := range hosts {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		host = strings.TrimSuffix(host, ".")
+		if host == "" {
+			return nil, fmt.Errorf("entry %d is empty", index+1)
+		}
+		if err := validateAllowedHost(host); err != nil {
+			return nil, fmt.Errorf("entry %d (%q): %w", index+1, raw, err)
+		}
+		if _, exists := seen[host]; exists {
+			continue
+		}
+		seen[host] = struct{}{}
+		normalized = append(normalized, host)
+	}
+	return normalized, nil
+}
+
+func validateAllowedHost(host string) error {
+	if len(host) > 253 {
+		return fmt.Errorf("host name is too long")
+	}
+	if net.ParseIP(host) != nil {
+		return nil
+	}
+	if strings.ContainsAny(host, "/?#@:*") {
+		return fmt.Errorf("must be a host name without scheme, port, path, or wildcard")
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return fmt.Errorf("contains an invalid DNS label")
+		}
+		for _, character := range label {
+			if !(unicode.IsLetter(character) || unicode.IsDigit(character) || character == '-') {
+				return fmt.Errorf("contains an invalid DNS character")
+			}
+		}
+	}
+	return nil
 }
 
 func defaultDataDir() string {

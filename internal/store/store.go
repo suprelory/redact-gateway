@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -56,6 +57,8 @@ type Stats struct {
 type Store struct {
 	db *sql.DB
 }
+
+const allowedHostsSettingKey = "allowed_hosts"
 
 func Open(dataDir string, retentionDays int) (*Store, error) {
 	path := filepath.Join(dataDir, "gateway.sqlite3")
@@ -119,9 +122,48 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_ms DESC);
 CREATE INDEX IF NOT EXISTS idx_events_upstream ON events(upstream_host, ts_ms DESC);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) LoadAllowedHosts(ctx context.Context) ([]string, bool, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, allowedHostsSettingKey).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return []string{}, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("query allowed hosts setting: %w", err)
+	}
+	var hosts []string
+	if err := json.Unmarshal([]byte(encoded), &hosts); err != nil {
+		return nil, false, fmt.Errorf("decode allowed hosts setting: %w", err)
+	}
+	if hosts == nil {
+		hosts = []string{}
+	}
+	return hosts, true, nil
+}
+
+func (s *Store) SaveAllowedHosts(ctx context.Context, hosts []string) error {
+	encoded, err := json.Marshal(hosts)
+	if err != nil {
+		return fmt.Errorf("encode allowed hosts setting: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
+ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+`, allowedHostsSettingKey, string(encoded), time.Now().UnixMilli())
+	if err != nil {
+		return fmt.Errorf("save allowed hosts setting: %w", err)
 	}
 	return nil
 }

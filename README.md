@@ -101,6 +101,8 @@ REDACT_ALLOW_PRIVATE_UPSTREAMS=1
 REDACT_ALLOWED_HOSTS=api.openai.com,api.anthropic.com,relay.example.com
 ```
 
+管理控制台的“运行设置”页面也可以编辑允许的上游域名。保存后新请求立即使用新白名单，无需重启网关；设置保存在数据目录的 SQLite 中，重启或 Docker 容器更新后仍然保留。首次启动且尚未在页面保存过设置时，使用 `REDACT_ALLOWED_HOSTS` 作为默认值。
+
 网关禁止自动跟随上游重定向。非空请求体必须是 JSON；解析或脱敏失败时请求会被阻断，不会明文旁路。
 
 ## 自动构建

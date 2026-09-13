@@ -37,7 +37,7 @@ func newHTTPClient(cfg config.Config) *http.Client {
 }
 
 func validateUpstream(ctx context.Context, target *url.URL, cfg config.Config) error {
-	host := strings.ToLower(target.Hostname())
+	host := strings.TrimSuffix(strings.ToLower(target.Hostname()), ".")
 	if len(cfg.AllowedHosts) > 0 {
 		allowed := false
 		for _, candidate := range cfg.AllowedHosts {

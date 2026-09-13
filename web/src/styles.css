@@ -162,7 +162,16 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparen
 .enabled-mark svg { width: 14px; height: 14px; }
 .settings-band { padding-bottom: 18px; }
 .settings-band > :not(.panel-title) { margin-left: 16px; margin-right: 16px; }
+.settings-form { display: grid; gap: 10px; }
+.settings-form .field-label { margin: 0; }
 .field-label { display: block; margin-top: 16px; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
+.settings-textarea { min-height: 132px; height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.5; }
+.field-help { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.settings-actions { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+.action-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; }
+.action-button svg { width: 16px; height: 16px; }
+.success-message { display: inline-flex; align-items: center; gap: 5px; color: var(--green); font-size: 12px; }
+.success-message svg { width: 15px; height: 15px; }
 .copy-list { display: grid; gap: 8px; margin-top: 14px; }
 .copy-field { min-width: 0; min-height: 43px; display: grid; grid-template-columns: 130px minmax(0, 1fr) 34px; align-items: center; gap: 10px; padding: 4px 6px 4px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
 .copy-field > span { color: var(--muted); font-size: 12px; }

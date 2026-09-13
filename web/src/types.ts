@@ -11,6 +11,10 @@ export interface GatewayStatus {
   max_body_bytes: number
 }
 
+export interface GatewaySettings {
+  allowed_hosts: string[]
+}
+
 export interface GatewayEvent {
   id: number
   request_id: string
