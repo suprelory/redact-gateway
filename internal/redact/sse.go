@@ -289,7 +289,7 @@ func streamFields(data any, eventName string) []streamField {
 			if delta, ok := choice["delta"].(map[string]any); ok {
 				collectStringLeaves(delta,
 					[]pathPart{keyPart("choices"), indexPart(choiceIndex), keyPart("delta")},
-					fmt.Sprintf("chat:%d:delta", channelIndex), &fields, nil)
+					fmt.Sprintf("chat:%d:delta", channelIndex), &fields, nil, nil)
 			}
 			if text, ok := choice["text"].(string); ok {
 				fields = append(fields, streamField{
@@ -314,7 +314,7 @@ func streamFields(data any, eventName string) []streamField {
 			})
 		}
 	case map[string]any:
-		collectStringLeaves(delta, []pathPart{keyPart("delta")}, "delta:"+typeName+":"+streamIdentity(object), &fields, nil)
+		collectStringLeaves(delta, []pathPart{keyPart("delta")}, "delta:"+typeName+":"+streamIdentity(object), &fields, nil, nil)
 	}
 	if completion, ok := object["completion"].(string); ok {
 		fields = append(fields, streamField{path: []pathPart{keyPart("completion")}, channel: "anthropic:completion", source: completion})
@@ -322,26 +322,41 @@ func streamFields(data any, eventName string) []streamField {
 	return fields
 }
 
-func collectStringLeaves(value any, base []pathPart, channelPrefix string, fields *[]streamField, local []pathPart) {
+func collectStringLeaves(value any, base []pathPart, channelPrefix string, fields *[]streamField, local, logical []pathPart) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
 			next := appendPath(local, keyPart(key))
+			nextLogical := appendPath(logical, keyPart(key))
 			if text, ok := child.(string); ok {
 				if isStreamMetadataKey(key) {
 					continue
 				}
 				*fields = append(*fields, streamField{
-					path: appendPath(base, next...), channel: channelPrefix + ":" + pathKey(next), source: text,
+					path: appendPath(base, next...), channel: channelPrefix + ":" + pathKey(nextLogical), source: text,
 					jsonText: isJSONTextField(key),
 				})
 				continue
 			}
-			collectStringLeaves(child, base, channelPrefix, fields, next)
+			collectStringLeaves(child, base, channelPrefix, fields, next, nextLogical)
 		}
 	case []any:
 		for index, child := range typed {
-			collectStringLeaves(child, base, channelPrefix, fields, appendPath(local, indexPart(index)))
+			channelIndex := index
+			if len(local) > 0 && local[len(local)-1].key == "tool_calls" {
+				// Sparse chunks can put different tools at array position zero.
+				// Only the logical channel uses the protocol index; writes still
+				// target the original position in this event's JSON array.
+				if call, ok := child.(map[string]any); ok {
+					if number, ok := call["index"].(json.Number); ok {
+						if parsed, err := number.Int64(); err == nil && parsed >= 0 {
+							channelIndex = int(parsed)
+						}
+					}
+				}
+			}
+			collectStringLeaves(child, base, channelPrefix, fields,
+				appendPath(local, indexPart(index)), appendPath(logical, indexPart(channelIndex)))
 		}
 	}
 }
