@@ -137,6 +137,13 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparen
 .empty-state { padding: 32px; }
 .empty-cell { height: 90px; }
 .toolbar { display: flex; align-items: center; gap: 10px; }
+.refresh-controls { display: inline-flex; align-items: center; gap: 8px; }
+.refresh-select { position: relative; display: inline-flex; align-items: center; }
+.refresh-select select { height: 34px; min-width: 142px; padding: 0 28px 0 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); outline: none; }
+.refresh-select select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .search-field { position: relative; width: min(390px, 100%); }
 .search-field svg { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); color: var(--muted); }
 .search-field input { width: 100%; height: 38px; padding: 0 12px 0 36px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); outline: none; }

@@ -189,9 +189,9 @@ function Dashboard({ status }: { status?: GatewayStatus }) {
 }
 
 function Logs() {
-  const [search, setSearch] = useState('')
-  const queryClient = useQueryClient()
-  const eventsQuery = useQuery({ queryKey: ['events', 200], queryFn: () => api.events(200), refetchInterval: 5_000 })
+	const [search, setSearch] = useState('')
+	const [refreshInterval, setRefreshInterval] = useState<number | false>(5_000)
+	const eventsQuery = useQuery({ queryKey: ['events', 200], queryFn: () => api.events(200), refetchInterval: refreshInterval })
   const events = useMemo(() => {
     const needle = search.trim().toLowerCase()
     if (!needle) return eventsQuery.data?.events ?? []
@@ -199,11 +199,38 @@ function Logs() {
       `${event.upstream_host} ${event.upstream_path} ${event.protocol} ${event.flags} ${event.status}`.toLowerCase().includes(needle),
     )
   }, [eventsQuery.data?.events, search])
-  return (
-    <section className="page full-height-page">
-      <PageHeader title="请求日志" meta={`${events.length} 条`} action={
-        <button className="icon-button bordered" title="刷新" onClick={() => queryClient.invalidateQueries({ queryKey: ['events'] })}><RefreshCw /></button>
-      } />
+	return (
+		<section className="page full-height-page">
+			<PageHeader title="请求日志" meta={`${events.length} 条`} action={
+				<div className="refresh-controls">
+					<button
+						className="icon-button bordered"
+						title="立即刷新"
+						aria-label="立即刷新请求日志"
+						onClick={() => { void eventsQuery.refetch() }}
+						disabled={eventsQuery.isFetching}
+					>
+						<RefreshCw className={eventsQuery.isFetching ? 'spin' : undefined} />
+					</button>
+					<label className="refresh-select">
+						<span className="sr-only">请求日志刷新频率</span>
+						<select
+							aria-label="请求日志刷新频率"
+							value={refreshInterval === false ? 'manual' : String(refreshInterval)}
+							onChange={(event) => {
+								const value = event.target.value
+								setRefreshInterval(value === 'manual' ? false : Number(value))
+							}}
+						>
+							<option value="manual">手动刷新</option>
+							<option value="5000">自动刷新 · 5 秒</option>
+							<option value="10000">自动刷新 · 10 秒</option>
+							<option value="30000">自动刷新 · 30 秒</option>
+							<option value="60000">自动刷新 · 60 秒</option>
+						</select>
+					</label>
+				</div>
+			} />
       <div className="toolbar">
         <div className="search-field"><Search /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索上游、接口、协议或状态" /></div>
       </div>
