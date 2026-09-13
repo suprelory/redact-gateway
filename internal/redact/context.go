@@ -72,13 +72,17 @@ func (c *Context) RestoreText(text string) string {
 func (c *Context) restoreText(text string, jsonString bool) string {
 	var out strings.Builder
 	position := 0
-	for _, candidate := range placeholderCandidates(text) {
+	candidates := placeholderCandidates(text)
+	if jsonString {
+		candidates = jsonPlaceholderCandidates(text)
+	}
+	for _, candidate := range candidates {
 		out.WriteString(text[position:candidate.start])
 		original := text[candidate.start:candidate.end]
 		if raw, ok := c.tokenToRaw[candidate.token]; ok {
 			c.restoreHits++
 			c.restoredTokens[candidate.token] = struct{}{}
-			if original != candidate.token {
+			if candidate.altered {
 				c.degradedHits++
 			}
 			if jsonString {

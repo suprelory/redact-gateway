@@ -8,74 +8,149 @@ import (
 )
 
 type SSEStreamRestorer struct {
-	context *Context
-	buffer  []byte
-	events  *sseEventRestorer
+	buffer        []byte
+	events        *sseEventRestorer
+	maxEventBytes int
+	framer        sseFramer
+	finished      bool
+	failure       error
 }
 
 func NewSSEStreamRestorer(context *Context) *SSEStreamRestorer {
+	return NewSSEStreamRestorerWithLimit(context, 32*1024*1024)
+}
+
+func NewSSEStreamRestorerWithLimit(context *Context, maxEventBytes int) *SSEStreamRestorer {
+	if maxEventBytes <= 0 {
+		maxEventBytes = 32 * 1024 * 1024
+	}
 	return &SSEStreamRestorer{
-		context: context,
-		events:  newSSEEventRestorer(context),
+		events:        newSSEEventRestorer(context),
+		maxEventBytes: maxEventBytes,
 	}
 }
 
 func (r *SSEStreamRestorer) Push(chunk []byte) ([]byte, error) {
-	r.buffer = append(r.buffer, chunk...)
+	if r.failure != nil {
+		return nil, r.failure
+	}
+	if r.finished {
+		return nil, fmt.Errorf("SSE restorer already finished")
+	}
 	var output bytes.Buffer
-	for {
-		end, separatorLength := nextSSEEvent(r.buffer)
-		if end < 0 {
-			break
-		}
-		raw := string(r.buffer[:end])
-		r.buffer = r.buffer[end+separatorLength:]
-		produced, err := r.events.ingest(raw)
+	for len(chunk) > 0 {
+		size := min(len(chunk), 32*1024)
+		r.buffer = append(r.buffer, chunk[:size]...)
+		chunk = chunk[size:]
+		produced, err := r.consume(false)
+		output.Write(produced)
 		if err != nil {
-			return nil, err
+			r.fail(err)
+			return output.Bytes(), err
 		}
-		output.WriteString(produced)
 	}
 	return output.Bytes(), nil
 }
 
 func (r *SSEStreamRestorer) Finish() ([]byte, error) {
+	if r.failure != nil || r.finished {
+		return nil, r.failure
+	}
+	r.finished = true
 	var output bytes.Buffer
+	complete, err := r.consume(true)
+	output.Write(complete)
+	if err != nil {
+		r.fail(err)
+		return output.Bytes(), err
+	}
 	if len(r.buffer) > 0 {
 		produced, err := r.events.ingest(string(r.buffer))
-		if err != nil {
-			return nil, err
-		}
 		output.WriteString(produced)
 		r.buffer = nil
+		if err != nil {
+			r.fail(err)
+			return output.Bytes(), err
+		}
 	}
 	produced, err := r.events.finish()
-	if err != nil {
-		return nil, err
-	}
 	output.WriteString(produced)
+	if err != nil {
+		r.fail(err)
+		return output.Bytes(), err
+	}
 	return output.Bytes(), nil
+}
+
+func (r *SSEStreamRestorer) fail(err error) {
+	r.failure = err
+	r.buffer = nil
+	clear(r.events.channels)
+	r.events.retained = 0
+}
+
+func (r *SSEStreamRestorer) consume(final bool) ([]byte, error) {
+	var output bytes.Buffer
+	for {
+		end, separatorLength := r.framer.next(r.buffer, final)
+		if end < 0 {
+			// A separator can still be incomplete at the end of a read.
+			if len(r.buffer) > r.maxEventBytes && (len(r.buffer)-r.maxEventBytes > 3 || len(bytes.TrimRight(r.buffer, "\r\n")) > r.maxEventBytes) {
+				return output.Bytes(), ErrSSELimit
+			}
+			return output.Bytes(), nil
+		}
+		if end > r.maxEventBytes {
+			return output.Bytes(), ErrSSELimit
+		}
+		raw := string(r.buffer[:end])
+		r.buffer = r.buffer[end+separatorLength:]
+		if len(r.buffer) == 0 {
+			r.buffer = nil
+		} else if end > 64*1024 {
+			r.buffer = bytes.Clone(r.buffer)
+		}
+		r.framer = sseFramer{}
+		produced, err := r.events.ingest(raw)
+		output.WriteString(produced)
+		if err != nil {
+			return output.Bytes(), err
+		}
+	}
 }
 
 // ErrorClass reports application failures carried inside an HTTP 200 stream.
 // It never copies upstream error messages, which may contain sensitive data.
 func (r *SSEStreamRestorer) ErrorClass() string { return r.events.errorClass }
 
-func nextSSEEvent(buffer []byte) (int, int) {
-	lf := bytes.Index(buffer, []byte("\n\n"))
-	crlf := bytes.Index(buffer, []byte("\r\n\r\n"))
-	switch {
-	case lf < 0 && crlf < 0:
-		return -1, 0
-	case lf < 0:
-		return crlf, 4
-	case crlf < 0:
-		return lf, 2
-	case lf < crlf:
-		return lf, 2
-	default:
-		return crlf, 4
+type sseFramer struct {
+	position, lineStart, previousEnd int
+}
+
+func (s *sseFramer) next(buffer []byte, final bool) (int, int) {
+	for s.position < len(buffer) {
+		position := s.position
+		if buffer[position] != '\n' && buffer[position] != '\r' {
+			s.position++
+			continue
+		}
+		length := 1
+		if buffer[position] == '\r' {
+			if position+1 == len(buffer) && !final {
+				break
+			} // CRLF may be split across reads.
+			if position+1 < len(buffer) && buffer[position+1] == '\n' {
+				length = 2
+			}
+		}
+		if position == s.lineStart {
+			return s.previousEnd, position + length - s.previousEnd
+		}
+		s.previousEnd = position
+		s.lineStart = position + length
+		s.position = position + length
 	}
+	return -1, 0
 }
 
 type sseEvent struct {
@@ -88,6 +163,7 @@ type sseEvent struct {
 
 func parseSSEEvent(raw string) sseEvent {
 	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
 	lines := strings.Split(normalized, "\n")
 	event := sseEvent{raw: normalized, insertAt: -1}
 	var dataLines []string
@@ -139,188 +215,6 @@ type streamField struct {
 	channel  string
 	source   string
 	jsonText bool
-}
-
-type queuedEvent struct {
-	parsed  sseEvent
-	data    any
-	safe    bool
-	pending int
-	direct  string
-}
-
-type fieldRecord struct {
-	event *queuedEvent
-	path  []pathPart
-}
-
-type channelState struct {
-	text        string
-	records     []fieldRecord
-	jsonText    bool
-	previous    byte
-	hasPrevious bool
-}
-
-func (c *channelState) restore(text string, context *Context) string {
-	source := text
-	guard := c.hasPrevious && identifierByte(c.previous) && len(text) > 0 && (text[0] == 'R' || text[0] == 'r')
-	if guard {
-		text = string(c.previous) + text
-	}
-	restored := restoreString(text, context, c.jsonText)
-	if guard {
-		restored = restored[1:]
-	}
-	if len(source) > 0 {
-		c.previous = source[len(source)-1]
-		c.hasPrevious = true
-	}
-	return restored
-}
-
-type sseEventRestorer struct {
-	context    *Context
-	channels   map[string]*channelState
-	queue      []*queuedEvent
-	errorClass string
-}
-
-func newSSEEventRestorer(context *Context) *sseEventRestorer {
-	return &sseEventRestorer{
-		context:  context,
-		channels: make(map[string]*channelState),
-	}
-}
-
-func (r *sseEventRestorer) ingest(raw string) (string, error) {
-	parsed := parseSSEEvent(raw)
-	if parsed.dataText == "" || parsed.dataText == "[DONE]" {
-		r.queue = append(r.queue, &queuedEvent{safe: true, direct: parsed.raw + "\n\n"})
-		return r.drain(false)
-	}
-
-	var data any
-	decoder := json.NewDecoder(strings.NewReader(parsed.dataText))
-	decoder.UseNumber()
-	if err := decoder.Decode(&data); err != nil {
-		direct := parsed.serialize(r.context.RestoreText(parsed.dataText))
-		r.queue = append(r.queue, &queuedEvent{safe: true, direct: direct})
-		return r.drain(false)
-	}
-	if r.errorClass == "" {
-		r.errorClass = streamErrorClass(data, parsed.eventName)
-	}
-
-	fields := streamFields(data, parsed.eventName)
-	excluded := make(map[string]struct{}, len(fields))
-	for _, field := range fields {
-		excluded[pathKey(field.path)] = struct{}{}
-	}
-	restoreCompleteStrings(data, r.context, excluded, nil)
-	event := &queuedEvent{parsed: parsed, data: data, safe: len(fields) == 0, pending: len(fields)}
-	r.queue = append(r.queue, event)
-	affected := make(map[string]struct{})
-	for _, field := range fields {
-		channel := r.channels[field.channel]
-		if channel == nil {
-			channel = &channelState{jsonText: field.jsonText}
-			r.channels[field.channel] = channel
-		}
-		channel.text += field.source
-		channel.records = append(channel.records, fieldRecord{event: event, path: field.path})
-		affected[field.channel] = struct{}{}
-	}
-	for channel := range affected {
-		if err := r.maybeFlushChannel(channel, false); err != nil {
-			return "", err
-		}
-	}
-	return r.drain(false)
-}
-
-func streamErrorClass(data any, eventName string) string {
-	object, ok := data.(map[string]any)
-	if !ok {
-		return ""
-	}
-	typeName, _ := object["type"].(string)
-	if typeName == "" {
-		typeName = eventName
-	}
-	switch typeName {
-	case "error":
-		return "upstream_stream_error"
-	case "response.failed":
-		return "upstream_response_failed"
-	case "response.incomplete":
-		return "upstream_response_incomplete"
-	}
-	if response, ok := object["response"].(map[string]any); ok {
-		switch response["status"] {
-		case "failed":
-			return "upstream_response_failed"
-		case "incomplete":
-			return "upstream_response_incomplete"
-		}
-	}
-	return ""
-}
-
-func (r *sseEventRestorer) finish() (string, error) {
-	for channel := range r.channels {
-		if err := r.maybeFlushChannel(channel, true); err != nil {
-			return "", err
-		}
-	}
-	return r.drain(true)
-}
-
-func (r *sseEventRestorer) maybeFlushChannel(name string, force bool) error {
-	channel := r.channels[name]
-	if channel == nil || len(channel.records) == 0 {
-		return nil
-	}
-	if !force && possiblePlaceholderSuffixLength(channel.text) > 0 {
-		return nil
-	}
-	restored := channel.restore(channel.text, r.context)
-	for _, record := range channel.records {
-		if err := setStringAt(record.event.data, record.path, ""); err != nil {
-			return err
-		}
-	}
-	last := channel.records[len(channel.records)-1]
-	if err := setStringAt(last.event.data, last.path, restored); err != nil {
-		return err
-	}
-	for _, record := range channel.records {
-		record.event.pending--
-		if record.event.pending == 0 {
-			record.event.safe = true
-		}
-	}
-	channel.text = ""
-	channel.records = nil
-	return nil
-}
-
-func (r *sseEventRestorer) drain(force bool) (string, error) {
-	var output strings.Builder
-	for len(r.queue) > 0 && (r.queue[0].safe || force) {
-		event := r.queue[0]
-		r.queue = r.queue[1:]
-		if event.direct != "" {
-			output.WriteString(event.direct)
-			continue
-		}
-		data, err := json.Marshal(event.data)
-		if err != nil {
-			return "", err
-		}
-		output.WriteString(event.parsed.serialize(string(data)))
-	}
-	return output.String(), nil
 }
 
 func streamFields(data any, eventName string) []streamField {
@@ -416,31 +310,26 @@ func collectStringLeaves(value any, base []pathPart, channelPrefix string, field
 	}
 }
 
-func restoreCompleteStrings(value any, context *Context, excluded map[string]struct{}, path []pathPart) {
+func restoreCompleteStrings(value any, context *Context, excluded map[string]struct{}, path []pathPart) any {
 	switch typed := value.(type) {
+	case string:
+		if _, skip := excluded[pathKey(path)]; skip {
+			return typed
+		}
+		jsonText := len(path) > 0 && isJSONTextField(path[len(path)-1].key)
+		return restoreString(typed, context, jsonText)
 	case map[string]any:
 		for key, child := range typed {
 			next := appendPath(path, keyPart(key))
-			if text, ok := child.(string); ok {
-				if _, skip := excluded[pathKey(next)]; !skip {
-					typed[key] = restoreString(text, context, isJSONTextField(key))
-				}
-				continue
-			}
-			restoreCompleteStrings(child, context, excluded, next)
+			typed[key] = restoreCompleteStrings(child, context, excluded, next)
 		}
 	case []any:
 		for index, child := range typed {
 			next := appendPath(path, indexPart(index))
-			if text, ok := child.(string); ok {
-				if _, skip := excluded[pathKey(next)]; !skip {
-					typed[index] = context.RestoreText(text)
-				}
-				continue
-			}
-			restoreCompleteStrings(child, context, excluded, next)
+			typed[index] = restoreCompleteStrings(child, context, excluded, next)
 		}
 	}
+	return value
 }
 
 func setStringAt(root any, path []pathPart, value string) error {
@@ -481,14 +370,8 @@ func setStringAt(root any, path []pathPart, value string) error {
 }
 
 func streamIdentity(object map[string]any) string {
-	keys := []string{"output_index", "content_index", "index", "item_id"}
-	parts := make([]string, 0, len(keys))
-	for _, key := range keys {
-		if value, ok := object[key]; ok {
-			parts = append(parts, fmt.Sprint(value))
-		}
-	}
-	return strings.Join(parts, ":")
+	owner := responseOwner(object)
+	return fmt.Sprintf("%s:content:%d:summary:%d:block:%d", owner, streamIndex(object, "content_index", 0), streamIndex(object, "summary_index", 0), streamIndex(object, "index", 0))
 }
 
 func isStreamMetadataKey(key string) bool {

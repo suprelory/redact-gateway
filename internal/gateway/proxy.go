@@ -272,17 +272,13 @@ func (p *Proxy) streamSSE(writer http.ResponseWriter, request *http.Request, res
 	copyResponseHeaders(writer.Header(), response.Header, p.cfg.CORSOrigin)
 	writer.WriteHeader(response.StatusCode)
 	flusher, _ := writer.(http.Flusher)
-	restorer := redact.NewSSEStreamRestorer(contextMap)
+	restorer := redact.NewSSEStreamRestorerWithLimit(contextMap, int(p.responseBodyLimit()))
 	buffer := make([]byte, 32*1024)
 	var written int64
 	for {
 		read, readErr := response.Body.Read(buffer)
 		if read > 0 {
 			output, restoreErr := restorer.Push(buffer[:read])
-			if restoreErr != nil {
-				p.logger.Error("restore SSE", "error", restoreErr)
-				return written, "restore_failed"
-			}
 			if len(output) > 0 {
 				n, writeErr := writer.Write(output)
 				written += int64(n)
@@ -293,6 +289,10 @@ func (p *Proxy) streamSSE(writer http.ResponseWriter, request *http.Request, res
 					flusher.Flush()
 				}
 			}
+			if restoreErr != nil {
+				p.logger.Error("restore SSE", "error", restoreErr)
+				return written, streamRestoreErrorClass(restoreErr)
+			}
 		}
 		if readErr != nil {
 			if !errors.Is(readErr, io.EOF) && request.Context().Err() == nil {
@@ -302,9 +302,6 @@ func (p *Proxy) streamSSE(writer http.ResponseWriter, request *http.Request, res
 		}
 	}
 	tail, err := restorer.Finish()
-	if err != nil {
-		return written, "restore_failed"
-	}
 	if len(tail) > 0 {
 		n, writeErr := writer.Write(tail)
 		written += int64(n)
@@ -315,7 +312,30 @@ func (p *Proxy) streamSSE(writer http.ResponseWriter, request *http.Request, res
 			flusher.Flush()
 		}
 	}
+	if err != nil {
+		return written, streamRestoreErrorClass(err)
+	}
 	return written, restorer.ErrorClass()
+}
+
+func streamRestoreErrorClass(err error) string {
+	if errors.Is(err, redact.ErrSSELimit) {
+		return "stream_limit_exceeded"
+	}
+	return "restore_failed"
+}
+
+func (p *Proxy) responseBodyLimit() int64 {
+	// Also fits an int for the SSE parser and leaves room for LimitReader's
+	// extra byte without overflowing on either 32-bit or 64-bit platforms.
+	maximum := int64(^uint(0)>>1) - 1
+	if p.cfg.MaxBodyBytes > maximum/2 {
+		return maximum
+	}
+	if p.cfg.MaxBodyBytes <= 0 {
+		return 32 * 1024 * 1024
+	}
+	return p.cfg.MaxBodyBytes * 2
 }
 
 func (p *Proxy) writeNonStreaming(writer http.ResponseWriter, response *http.Response, contextMap *redact.Context) (int64, string) {
@@ -338,7 +358,7 @@ func (p *Proxy) writeNonStreaming(writer http.ResponseWriter, response *http.Res
 		writeGatewayError(writer, http.StatusBadGateway, "encoded_response", "upstream returned an encoded textual response", p.cfg.CORSOrigin)
 		return 0, "encoded_response"
 	}
-	limit := p.cfg.MaxBodyBytes * 2
+	limit := p.responseBodyLimit()
 	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
 	if err != nil {
 		writeGatewayError(writer, http.StatusBadGateway, "response_read_failed", "failed to read upstream response", p.cfg.CORSOrigin)

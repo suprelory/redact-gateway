@@ -17,6 +17,7 @@ const maxPlaceholderSpan = 128
 type placeholderCandidate struct {
 	start, end int
 	token      string
+	altered    bool
 }
 
 func placeholderCandidates(text string) []placeholderCandidate {
@@ -40,7 +41,8 @@ func placeholderCandidates(text string) []placeholderCandidate {
 			candidates = append(candidates, placeholderCandidate{start: start, end: end})
 			continue
 		}
-		candidates = append(candidates, placeholderCandidate{start: start, end: end, token: "{{RG_" + label + "_" + id + "}}"})
+		token := "{{RG_" + label + "_" + id + "}}"
+		candidates = append(candidates, placeholderCandidate{start: start, end: end, token: token, altered: text[start:end] != token})
 	}
 	return candidates
 }
