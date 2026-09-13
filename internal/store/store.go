@@ -13,25 +13,26 @@ import (
 )
 
 type Event struct {
-	ID             int64          `json:"id"`
-	RequestID      string         `json:"request_id"`
-	Timestamp      string         `json:"timestamp"`
-	Method         string         `json:"method"`
-	Protocol       string         `json:"protocol"`
-	UpstreamScheme string         `json:"upstream_scheme"`
-	UpstreamHost   string         `json:"upstream_host"`
-	UpstreamPort   string         `json:"upstream_port,omitempty"`
-	UpstreamPath   string         `json:"upstream_path"`
-	Flags          string         `json:"flags"`
-	Streaming      bool           `json:"streaming"`
-	Status         int            `json:"status"`
-	DurationMS     int64          `json:"duration_ms"`
-	RequestBytes   int64          `json:"request_bytes"`
-	ResponseBytes  int64          `json:"response_bytes"`
-	RedactionCount int            `json:"redaction_count"`
-	RestoreCount   int            `json:"restore_count"`
-	RuleHits       map[string]int `json:"rule_hits"`
-	ErrorClass     string         `json:"error_class,omitempty"`
+	ID              int64          `json:"id"`
+	RequestID       string         `json:"request_id"`
+	Timestamp       string         `json:"timestamp"`
+	Method          string         `json:"method"`
+	Protocol        string         `json:"protocol"`
+	UpstreamScheme  string         `json:"upstream_scheme"`
+	UpstreamHost    string         `json:"upstream_host"`
+	UpstreamPort    string         `json:"upstream_port,omitempty"`
+	UpstreamPath    string         `json:"upstream_path"`
+	Flags           string         `json:"flags"`
+	Streaming       bool           `json:"streaming"`
+	Status          int            `json:"status"`
+	DurationMS      int64          `json:"duration_ms"`
+	RequestBytes    int64          `json:"request_bytes"`
+	ResponseBytes   int64          `json:"response_bytes"`
+	RedactionCount  int            `json:"redaction_count"`
+	RestoreCount    int            `json:"restore_count"`
+	RuleHits        map[string]int `json:"rule_hits"`
+	RedactionFields []string       `json:"redaction_fields"`
+	ErrorClass      string         `json:"error_class,omitempty"`
 }
 
 type Overview struct {
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS events (
     redaction_count INTEGER NOT NULL,
     restore_count INTEGER NOT NULL,
     rule_hits_json TEXT NOT NULL,
+    redaction_fields_json TEXT NOT NULL DEFAULT '[]',
     error_class TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts_ms DESC);
@@ -130,6 +132,39 @@ CREATE TABLE IF NOT EXISTS settings (
 `
 	if _, err := s.db.Exec(schema); err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
+	}
+	if err := s.ensureEventColumn(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureEventColumn() error {
+	rows, err := s.db.Query(`PRAGMA table_info(events)`)
+	if err != nil {
+		return fmt.Errorf("inspect events schema: %w", err)
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return fmt.Errorf("scan events schema: %w", err)
+		}
+		if name == "redaction_fields_json" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate events schema: %w", err)
+	}
+	if found {
+		return nil
+	}
+	if _, err := s.db.Exec(`ALTER TABLE events ADD COLUMN redaction_fields_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+		return fmt.Errorf("migrate events schema: %w", err)
 	}
 	return nil
 }
@@ -184,13 +219,13 @@ INSERT INTO events (
     request_id, ts_ms, method, protocol, upstream_scheme, upstream_host,
     upstream_port, upstream_path, flags, streaming, status, duration_ms,
     request_bytes, response_bytes, redaction_count, restore_count,
-    rule_hits_json, error_class
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    rule_hits_json, redaction_fields_json, error_class
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		event.RequestID, timestamp.UnixMilli(), event.Method, event.Protocol,
 		event.UpstreamScheme, event.UpstreamHost, event.UpstreamPort, event.UpstreamPath,
 		event.Flags, boolInt(event.Streaming), event.Status, event.DurationMS,
 		event.RequestBytes, event.ResponseBytes, event.RedactionCount, event.RestoreCount,
-		string(hits), event.ErrorClass,
+		string(hits), encodeStringSlice(event.RedactionFields), event.ErrorClass,
 	)
 	if err != nil {
 		return fmt.Errorf("insert event: %w", err)
@@ -206,7 +241,7 @@ func (s *Store) Events(ctx context.Context, limit int, upstreamHost string) ([]E
 SELECT id, request_id, ts_ms, method, protocol, upstream_scheme, upstream_host,
        upstream_port, upstream_path, flags, streaming, status, duration_ms,
        request_bytes, response_bytes, redaction_count, restore_count,
-       rule_hits_json, error_class
+       rule_hits_json, redaction_fields_json, error_class
 FROM events`
 	args := make([]any, 0, 2)
 	if upstreamHost != "" {
@@ -228,11 +263,12 @@ FROM events`
 		var timestamp int64
 		var streaming int
 		var hitsJSON string
+		var fieldsJSON string
 		if err := rows.Scan(
 			&event.ID, &event.RequestID, &timestamp, &event.Method, &event.Protocol,
 			&event.UpstreamScheme, &event.UpstreamHost, &event.UpstreamPort, &event.UpstreamPath,
 			&event.Flags, &streaming, &event.Status, &event.DurationMS, &event.RequestBytes,
-			&event.ResponseBytes, &event.RedactionCount, &event.RestoreCount, &hitsJSON,
+			&event.ResponseBytes, &event.RedactionCount, &event.RestoreCount, &hitsJSON, &fieldsJSON,
 			&event.ErrorClass,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
@@ -241,6 +277,9 @@ FROM events`
 		event.Streaming = streaming != 0
 		if err := json.Unmarshal([]byte(hitsJSON), &event.RuleHits); err != nil {
 			event.RuleHits = map[string]int{}
+		}
+		if err := json.Unmarshal([]byte(fieldsJSON), &event.RedactionFields); err != nil || event.RedactionFields == nil {
+			event.RedactionFields = []string{}
 		}
 		events = append(events, event)
 	}
@@ -298,4 +337,15 @@ func boolInt(value bool) int {
 		return 1
 	}
 	return 0
+}
+
+func encodeStringSlice(values []string) string {
+	if values == nil {
+		return "[]"
+	}
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(encoded)
 }

@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -14,20 +15,20 @@ var controlKeys = map[string]struct{}{
 }
 
 func RedactJSON(value any, context *Context, flags DetectorFlags) (any, error) {
-	return transformJSON(value, context, flags, nil)
+	return transformJSON(value, context, flags, nil, "$")
 }
 
-func transformJSON(value any, context *Context, flags DetectorFlags, path []string) (any, error) {
+func transformJSON(value any, context *Context, flags DetectorFlags, path []string, fieldPath string) (any, error) {
 	switch typed := value.(type) {
 	case string:
 		if shouldSkipPath(path) {
 			return typed, nil
 		}
-		return context.RedactText(typed, flags)
+		return context.RedactTextAtPath(typed, flags, fieldPath)
 	case []any:
 		out := make([]any, len(typed))
 		for index, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, jsonIndex(index)))
+			mapped, err := transformJSON(child, context, flags, append(path, jsonIndex(index)), fieldPath+jsonIndex(index))
 			if err != nil {
 				return nil, err
 			}
@@ -37,7 +38,7 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, key))
+			mapped, err := transformJSON(child, context, flags, append(path, key), auditPathKey(fieldPath, key))
 			if err != nil {
 				return nil, err
 			}
@@ -176,6 +177,26 @@ func shouldSkipPath(path []string) bool {
 }
 
 func jsonIndex(index int) string {
-	data, _ := json.Marshal(index)
-	return string(data)
+	return "[" + strconv.Itoa(index) + "]"
+}
+
+func auditPathKey(parent, key string) string {
+	// Keys can contain secrets too. Mask detected values in audit metadata
+	// without changing request keys, rule hits, or restoration mappings.
+	flags := DetectorFlags{Email: true, Phone: true, Secret: true, Identity: true, Bank: true, Gitleaks: true, HighEntropy: true}
+	if len(FindSensitiveMatches(key, flags)) > 0 {
+		return parent + `["<redacted-key>"]`
+	}
+	identifier := key != ""
+	for index, r := range key {
+		if !(r == '_' || r == '$' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || index > 0 && r >= '0' && r <= '9') {
+			identifier = false
+			break
+		}
+	}
+	if identifier {
+		return parent + "." + key
+	}
+	encoded, _ := json.Marshal(key)
+	return parent + "[" + string(encoded) + "]"
 }

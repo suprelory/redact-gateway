@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, NavLink, Route, Routes } from 'react-router-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
@@ -6,6 +6,7 @@ import {
   BarChart3,
   Check,
   Clipboard,
+  Eye,
   FileClock,
   Gauge,
   KeyRound,
@@ -18,6 +19,7 @@ import {
   ShieldCheck,
   Sun,
   TerminalSquare,
+  X,
 } from 'lucide-react'
 import { api, clearToken, readToken, saveToken } from './api'
 import type { GatewayEvent, GatewayStatus } from './types'
@@ -28,6 +30,22 @@ const navItems = [
   { to: '/rules', label: '脱敏规则', icon: ShieldCheck },
   { to: '/settings', label: '运行设置', icon: Settings },
 ]
+
+const ruleLabels: Record<string, string> = {
+	EMAIL: '邮箱',
+	PHONE: '电话号码',
+	APIKEY: 'API 密钥',
+	IDCARD: '身份证',
+	CARD: '银行卡',
+	PRIVATEKEY: '私钥',
+	AWSKEY: 'AWS 密钥',
+	GITHUB: 'GitHub Token',
+	GITLAB: 'GitLab Token',
+	JWT: 'JWT',
+	CONNSTR: '连接串',
+	BEARER: 'Bearer Token',
+	ENTROPY: '高熵字符串',
+}
 
 export default function App() {
   const [token, setToken] = useState(readToken())
@@ -191,6 +209,7 @@ function Dashboard({ status }: { status?: GatewayStatus }) {
 function Logs() {
 	const [search, setSearch] = useState('')
 	const [refreshInterval, setRefreshInterval] = useState<number | false>(5_000)
+	const [selectedEvent, setSelectedEvent] = useState<GatewayEvent | null>(null)
 	const eventsQuery = useQuery({ queryKey: ['events', 200], queryFn: () => api.events(200), refetchInterval: refreshInterval })
   const events = useMemo(() => {
     const needle = search.trim().toLowerCase()
@@ -237,14 +256,15 @@ function Logs() {
       <section className="panel log-panel">
         <div className="table-wrap">
           <table>
-            <thead><tr><th>时间</th><th>上游</th><th>接口</th><th>协议</th><th>规则</th><th>脱敏/还原</th><th>状态</th><th>耗时</th></tr></thead>
+            <thead><tr><th>时间</th><th>上游</th><th>接口</th><th>协议</th><th>规则</th><th>脱敏/还原</th><th>状态</th><th>耗时</th><th>详情</th></tr></thead>
             <tbody>
-              {events.map((event) => <LogRow key={event.id} event={event} />)}
-              {!events.length && <EmptyRow columns={8} />}
+              {events.map((event) => <LogRow key={event.id} event={event} onDetails={() => setSelectedEvent(event)} />)}
+              {!events.length && <EmptyRow columns={9} />}
             </tbody>
           </table>
         </div>
       </section>
+      {selectedEvent && <LogDetailDialog event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
     </section>
   )
 }
@@ -354,7 +374,7 @@ function PanelTitle({ title }: { title: string }) {
   return <div className="panel-title"><h2>{title}</h2></div>
 }
 
-function LogRow({ event }: { event: GatewayEvent }) {
+function LogRow({ event, onDetails }: { event: GatewayEvent; onDetails: () => void }) {
   return (
     <tr>
       <td><time>{formatDateTime(event.timestamp)}</time></td>
@@ -365,8 +385,64 @@ function LogRow({ event }: { event: GatewayEvent }) {
       <td><span className="count-pair"><b>{event.redaction_count}</b><span>/</span>{event.restore_count}</span></td>
       <td><StatusCode value={event.status} /></td>
       <td>{event.duration_ms} ms</td>
+      <td><button className="icon-button bordered detail-button" type="button" title="查看详情" aria-label={`查看请求 ${event.request_id} 的详情`} onClick={onDetails}><Eye /></button></td>
     </tr>
   )
+}
+
+function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () => void }) {
+	const closeButton = useRef<HTMLButtonElement>(null)
+	useEffect(() => {
+		const previousFocus = document.activeElement
+		closeButton.current?.focus()
+		return () => {
+			if (previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus()
+		}
+	}, [])
+	const ruleHits = Object.entries(event.rule_hits ?? {}).sort(([left], [right]) => left.localeCompare(right))
+	const fields = event.redaction_fields ?? []
+	const upstream = `${event.upstream_scheme}://${event.upstream_host}${event.upstream_port ? `:${event.upstream_port}` : ''}`
+	return (
+		<div className="dialog-backdrop" role="presentation" onMouseDown={(mouseEvent) => { if (mouseEvent.target === mouseEvent.currentTarget) onClose() }}>
+			<section className="dialog" role="dialog" aria-modal="true" aria-labelledby="log-detail-title" onKeyDown={(keyEvent) => {
+				if (keyEvent.key === 'Escape') onClose()
+				// The close button is the only tab stop inside this read-only dialog.
+				if (keyEvent.key === 'Tab') {
+					keyEvent.preventDefault()
+					closeButton.current?.focus()
+				}
+			}}>
+				<header className="dialog-header">
+					<div><h2 id="log-detail-title">请求详情</h2><span>{event.request_id}</span></div>
+					<button ref={closeButton} className="icon-button bordered" type="button" title="关闭" aria-label="关闭请求详情" onClick={onClose}><X /></button>
+				</header>
+				<div className="dialog-body">
+					<dl className="detail-summary">
+						<div><dt>时间</dt><dd>{formatDateTime(event.timestamp)}</dd></div>
+						<div><dt>方法</dt><dd><code>{event.method}</code></dd></div>
+						<div><dt>上游</dt><dd className="detail-value-wrap"><code>{upstream}</code></dd></div>
+						<div><dt>接口</dt><dd className="detail-value-wrap"><code>{event.upstream_path}</code></dd></div>
+						<div><dt>协议</dt><dd><Protocol value={event.protocol} streaming={event.streaming} /></dd></div>
+						<div><dt>状态</dt><dd><StatusCode value={event.status} /></dd></div>
+						<div><dt>耗时</dt><dd>{event.duration_ms} ms</dd></div>
+						<div><dt>规则组合</dt><dd><code>{event.flags || '—'}</code></dd></div>
+					</dl>
+					<DetailSection title="命中规则">
+						{ruleHits.length ? <ul className="detail-list">{ruleHits.map(([rule, count]) => <li key={rule}><span className="detail-rule-name">{ruleLabels[rule] ?? rule}</span><code>{rule}</code><strong>{count} 次</strong></li>)}</ul> : <p className="detail-empty">本次请求未命中脱敏规则</p>}
+					</DetailSection>
+					<DetailSection title="脱敏字段">
+						{fields.length ? <ul className="field-list">{fields.map((field) => <li key={field}><code>{field}</code></li>)}</ul> : <p className="detail-empty">{event.redaction_count > 0 ? '此记录未保存脱敏字段路径（可能来自旧版本）' : '本次请求未发现可记录的脱敏字段'}</p>}
+					</DetailSection>
+					{event.error_class && <DetailSection title="错误分类"><p className="error-detail"><code>{event.error_class}</code></p></DetailSection>}
+					<p className="privacy-note">详情仅展示规则和字段路径，不包含请求或响应中的敏感原文。</p>
+				</div>
+			</section>
+		</div>
+	)
+}
+
+function DetailSection({ title, children }: { title: string; children: React.ReactNode }) {
+	return <section className="detail-section"><h3>{title}</h3>{children}</section>
 }
 
 function Protocol({ value, streaming }: { value: string; streaming: boolean }) {

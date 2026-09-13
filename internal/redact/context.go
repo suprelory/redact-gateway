@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -17,6 +18,7 @@ type Context struct {
 	rawToToken  map[string]string
 	tokenToRaw  map[string]string
 	hits        map[string]int
+	fields      map[string]struct{}
 	restoreHits int
 }
 
@@ -26,10 +28,15 @@ func NewContext(max int) *Context {
 		rawToToken: make(map[string]string),
 		tokenToRaw: make(map[string]string),
 		hits:       make(map[string]int),
+		fields:     make(map[string]struct{}),
 	}
 }
 
 func (c *Context) RedactText(text string, flags DetectorFlags) (string, error) {
+	return c.RedactTextAtPath(text, flags, "$")
+}
+
+func (c *Context) RedactTextAtPath(text string, flags DetectorFlags, fieldPath string) (string, error) {
 	matches := FindSensitiveMatches(text, flags)
 	if len(matches) == 0 {
 		return text, nil
@@ -50,6 +57,10 @@ func (c *Context) RedactText(text string, flags DetectorFlags) (string, error) {
 		position = match.End
 	}
 	out.WriteString(text[position:])
+	if fieldPath == "" {
+		fieldPath = "$"
+	}
+	c.fields[fieldPath] = struct{}{}
 	return out.String(), nil
 }
 
@@ -68,6 +79,15 @@ func (c *Context) Hits() map[string]int {
 	for key, value := range c.hits {
 		out[key] = value
 	}
+	return out
+}
+
+func (c *Context) RedactionFields() []string {
+	out := make([]string, 0, len(c.fields))
+	for field := range c.fields {
+		out = append(out, field)
+	}
+	sort.Strings(out)
 	return out
 }
 

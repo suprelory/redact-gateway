@@ -156,6 +156,7 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	}
 	event.RedactionCount = contextMap.RedactionCount()
 	event.RuleHits = contextMap.Hits()
+	event.RedactionFields = contextMap.RedactionFields()
 
 	upstreamRequest, err := http.NewRequestWithContext(request.Context(), request.Method, proxyRoute.Upstream.String(), bytes.NewReader(body))
 	if err != nil {

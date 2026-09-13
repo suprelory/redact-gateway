@@ -34,6 +34,7 @@ export interface GatewayEvent {
   redaction_count: number
   restore_count: number
   rule_hits: Record<string, number>
+  redaction_fields: string[]
   error_class?: string
 }
 

@@ -2,9 +2,73 @@ package redact
 
 import (
 	"encoding/json"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 )
+
+func TestAuditPaths(t *testing.T) {
+	t.Parallel()
+	secret := "alice@example.com"
+	tests := []struct {
+		name  string
+		input any
+		want  []string
+	}{
+		{"root string", secret, []string{"$"}},
+		{"nested arrays", []any{[]any{secret, secret}}, []string{"$[0][0]", "$[0][1]"}},
+		{"object keys", map[string]any{
+			"a.b": secret, "[0]": secret, "": secret, "0": secret, `a"b`: secret,
+			"safe_key": secret, "中文": secret,
+		}, []string{`$["a.b"]`, `$["[0]"]`, `$[""]`, `$["0"]`, `$["a\"b"]`, "$.safe_key", `$["中文"]`}},
+		{"tools and results", map[string]any{"content": []any{
+			map[string]any{"type": "tool_use", "input": map[string]any{"email": secret}},
+			map[string]any{"type": "tool_result", "content": secret},
+		}}, []string{"$.content[0].input.email", "$.content[1].content"}},
+		{"no matches", map[string]any{"content": "hello"}, []string{}},
+		{"protected fields", map[string]any{"model": secret, "image_url": map[string]any{"url": secret}}, []string{}},
+		{"sensitive key", map[string]any{secret: map[string]any{"text": secret}}, []string{`$["<redacted-key>"].text`}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			context := NewContext(20)
+			output, err := RedactJSON(test.input, context, DetectorFlags{Email: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sort.Strings(test.want)
+			if got := context.RedactionFields(); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("paths = %#v, want %#v", got, test.want)
+			}
+			if restored := RestoreJSON(output, context); !reflect.DeepEqual(restored, test.input) {
+				t.Fatalf("payload changed after round trip: %#v", restored)
+			}
+		})
+	}
+}
+
+func TestAuditFieldSet(t *testing.T) {
+	t.Parallel()
+	context := NewContext(10)
+	for _, path := range []string{"$.z", "$.a", "$.z"} {
+		if _, err := context.RedactTextAtPath("alice@example.com", DetectorFlags{Email: true}, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{"$.a", "$.z"}
+	if got := context.RedactionFields(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("paths = %#v, want %#v", got, want)
+	}
+	if context.Hits()["EMAIL"] != 3 || context.RedactionCount() != 3 {
+		t.Fatalf("repeated matches not counted: %#v", context.Hits())
+	}
+	copy := context.RedactionFields()
+	copy[0] = "changed"
+	if !reflect.DeepEqual(context.RedactionFields(), want) {
+		t.Fatal("returned paths share mutable storage with context")
+	}
+}
 
 func TestStructuredDetectorsAndRoundTrip(t *testing.T) {
 	t.Parallel()
@@ -60,6 +124,10 @@ func TestJSONWalkSkipsControlAndMultimodalFields(t *testing.T) {
 	}
 	if strings.Count(text, "{{RG_EMAIL_") != 2 {
 		t.Fatalf("expected prompt and tool argument redactions: %s", text)
+	}
+	wantFields := []string{"$.messages[0].content", "$.tool.arguments"}
+	if fields := context.RedactionFields(); !reflect.DeepEqual(fields, wantFields) {
+		t.Fatalf("redaction fields = %#v, want %#v", fields, wantFields)
 	}
 }
 

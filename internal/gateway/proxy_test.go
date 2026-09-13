@@ -73,7 +73,7 @@ func TestProxyRedactsAndRestoresAgainstRealUpstream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(events) != 1 || events[0].UpstreamHost == "" || events[0].RedactionCount != 1 {
+	if len(events) != 1 || events[0].UpstreamHost == "" || events[0].RedactionCount != 1 || len(events[0].RedactionFields) != 1 || events[0].RedactionFields[0] != "$.messages[0].content" {
 		t.Fatalf("unexpected events: %+v", events)
 	}
 }
