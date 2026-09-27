@@ -84,7 +84,9 @@ input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px color-mix(in s
 .main-column { min-width: 0; flex: 1; display: flex; flex-direction: column; }
 .topbar { min-width: 0; height: 62px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--border); background: color-mix(in srgb, var(--surface) 92%, transparent); }
 .runtime-state, .top-actions { min-width: 0; display: flex; align-items: center; gap: 9px; }
-.runtime-state code { padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--surface-2); }
+.runtime-state > span { flex: none; }
+.runtime-state code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border: 1px solid var(--border); border-radius: 4px; color: var(--muted); background: var(--surface-2); }
+.top-actions { flex: none; }
 .status-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
 .status-dot.ok { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
 .status-dot.error { background: var(--red); box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 15%, transparent); }
@@ -182,7 +184,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--surface-2) 70%, transparen
 .enabled-mark svg { width: 14px; height: 14px; }
 .settings-band { padding-bottom: 18px; }
 .settings-band > :not(.panel-title) { margin-left: 16px; margin-right: 16px; }
-.settings-form { display: grid; gap: 10px; }
+.settings-form { display: grid; gap: 10px; margin-top: 16px; }
 .settings-form .field-label { margin: 0; }
 .field-label { display: block; margin-top: 16px; margin-bottom: 7px; color: var(--muted); font-size: 12px; }
 .settings-textarea { min-height: 132px; height: 132px; padding: 10px 12px; resize: vertical; line-height: 1.5; }

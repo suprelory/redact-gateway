@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from './App'
 import { api, saveToken } from './api'
-import type { GatewayEvent } from './types'
+import type { GatewayEvent, GatewaySettings, GatewayStatus } from './types'
 
 const sampleEvent: GatewayEvent = {
   id: 1, request_id: 'request-one', timestamp: '2026-09-13T12:00:00Z',
@@ -19,17 +19,37 @@ const sampleEvent: GatewayEvent = {
 
 const clients: QueryClient[] = []
 
+const sampleStatus: GatewayStatus = {
+  service: 'redact-gateway', version: 'test', proxy_addr: '127.0.0.1:8787', gateway_url: '',
+  admin_addr: '127.0.0.1:8788', started_at: sampleEvent.timestamp, uptime_seconds: 60,
+  in_flight: 0, allowed_hosts: 1, allow_private_upstreams: false, max_body_bytes: 1024,
+}
+
 function renderLogs(events: GatewayEvent[], total = events.length) {
   saveToken('test-admin-token')
-  vi.spyOn(api, 'status').mockResolvedValue({
-    service: 'redact-gateway', version: 'test', proxy_addr: '127.0.0.1:8787',
-    admin_addr: '127.0.0.1:8788', started_at: sampleEvent.timestamp, uptime_seconds: 60,
-    in_flight: 0, allowed_hosts: 1, allow_private_upstreams: false, max_body_bytes: 1024,
-  })
+  vi.spyOn(api, 'status').mockResolvedValue(sampleStatus)
   vi.spyOn(api, 'events').mockResolvedValue({ events, total, page: 1, limit: 50 })
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
   clients.push(client)
   render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/logs']}><App /></MemoryRouter></QueryClientProvider>)
+  return client
+}
+
+function renderSettings(initialURL = '') {
+  saveToken('test-admin-token')
+  let settings: GatewaySettings = { allowed_hosts: ['api.openai.com'], gateway_url: initialURL }
+  vi.spyOn(api, 'status').mockImplementation(async () => ({
+    ...sampleStatus, gateway_url: settings.gateway_url, allowed_hosts: settings.allowed_hosts.length,
+  }))
+  vi.spyOn(api, 'settings').mockImplementation(async () => settings)
+  vi.spyOn(api, 'updateSettings').mockImplementation(async (changes) => {
+    settings = { ...settings, ...changes }
+    settings.gateway_url = settings.gateway_url.trim().replace(/\/+$/, '')
+    return settings
+  })
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } })
+  clients.push(client)
+  render(<QueryClientProvider client={client}><MemoryRouter initialEntries={['/settings']}><App /></MemoryRouter></QueryClientProvider>)
   return client
 }
 
@@ -61,6 +81,66 @@ describe('App', () => {
     render(<App />)
     expect(screen.getByRole('heading', { name: 'Redact Gateway' })).toBeInTheDocument()
     expect(screen.getByLabelText('管理令牌')).toBeInTheDocument()
+  })
+
+  it('loads the saved gateway URL in settings, the top bar, and client examples', async () => {
+    renderSettings('https://gateway.example.com/relay')
+    await waitFor(() => expect(screen.getByLabelText('数据面基础地址')).toHaveValue('https://gateway.example.com/relay'))
+    expect(within(screen.getByText('网关运行中').parentElement!).getByText('https://gateway.example.com/relay')).toBeInTheDocument()
+    expect(screen.getByText('https://gateway.example.com/relay/$https://api.openai.com/v1')).toBeInTheDocument()
+    expect(screen.getByText('https://gateway.example.com/relay/PSE$https://api.anthropic.com')).toBeInTheDocument()
+  })
+
+  it.each(['https://gateway.example.com', 'https://gateway.example.com:8443/relay'])(
+    'saves %s without appending a proxy port and preserves an unsaved allowlist', async (gatewayURL) => {
+      renderSettings('https://old.example.com')
+      await waitFor(() => expect(screen.getByRole('button', { name: '保存网关地址' })).toBeEnabled())
+      fireEvent.change(screen.getByLabelText('允许的上游域名'), { target: { value: 'draft.example.com' } })
+      fireEvent.change(screen.getByLabelText('数据面基础地址'), { target: { value: `${gatewayURL}/` } })
+      expect(within(screen.getByText('网关运行中').parentElement!).getByText('https://old.example.com')).toBeInTheDocument()
+      fireEvent.click(screen.getByRole('button', { name: '保存网关地址' }))
+      await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ gateway_url: `${gatewayURL}/` }))
+      expect(await screen.findByText('已保存并立即生效')).toBeInTheDocument()
+      expect(screen.getByLabelText('数据面基础地址')).toHaveValue(gatewayURL)
+      expect(screen.getByLabelText('允许的上游域名')).toHaveValue('draft.example.com')
+      expect(within(screen.getByText('网关运行中').parentElement!).getByText(gatewayURL)).toBeInTheDocument()
+      expect(screen.getByText(`${gatewayURL}/HPSE$https://api.openai.com/v1`)).toBeInTheDocument()
+    },
+  )
+
+  it('preserves an unsaved gateway address when saving the allowlist', async () => {
+    renderSettings('https://saved.example.com')
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存白名单' })).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('数据面基础地址'), { target: { value: 'https://draft.example.com' } })
+    fireEvent.change(screen.getByLabelText('允许的上游域名'), { target: { value: 'api.openai.com\napi.anthropic.com' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存白名单' }))
+    await screen.findByText('已保存并立即生效')
+    expect(api.updateSettings).toHaveBeenCalledWith({ allowed_hosts: ['api.openai.com', 'api.anthropic.com'] })
+    expect(screen.getByLabelText('数据面基础地址')).toHaveValue('https://draft.example.com')
+    expect(within(screen.getByText('网关运行中').parentElement!).getByText('https://saved.example.com')).toBeInTheDocument()
+  })
+
+  it('keeps the saved top bar address and the draft when saving fails', async () => {
+    renderSettings('https://saved.example.com')
+    vi.mocked(api.updateSettings).mockRejectedValueOnce(new Error('保存网关地址失败'))
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存网关地址' })).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('数据面基础地址'), { target: { value: 'https://draft.example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存网关地址' }))
+    expect(await screen.findByText('保存网关地址失败')).toBeInTheDocument()
+    expect(screen.getByLabelText('数据面基础地址')).toHaveValue('https://draft.example.com')
+    expect(within(screen.getByText('网关运行中').parentElement!).getByText('https://saved.example.com')).toBeInTheDocument()
+    expect(screen.queryByText('已保存并立即生效')).not.toBeInTheDocument()
+  })
+
+  it('restores automatic address detection when the saved URL is cleared', async () => {
+    renderSettings('https://saved.example.com')
+    await waitFor(() => expect(screen.getByRole('button', { name: '保存网关地址' })).toBeEnabled())
+    fireEvent.change(screen.getByLabelText('数据面基础地址'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存网关地址' }))
+    await screen.findByText('已保存并立即生效')
+    expect(api.updateSettings).toHaveBeenCalledWith({ gateway_url: '' })
+    expect(within(screen.getByText('网关运行中').parentElement!).getByText('http://localhost:8787')).toBeInTheDocument()
+    expect(screen.getByText('http://localhost:8787/$https://api.openai.com/v1')).toBeInTheDocument()
   })
 
   it('opens the selected request with actual rule hits and field paths', async () => {

@@ -48,7 +48,7 @@ export const api = {
   stats: (hours = 24) => request<GatewayStats>(`/api/v1/stats?hours=${hours}`),
 	rules: () => request<{ all_flags: string; rules: RuleInfo[] }>('/api/v1/rules'),
 	settings: (token?: string) => request<GatewaySettings>('/api/v1/settings', token),
-	updateSettings: (settings: GatewaySettings, token?: string) => request<GatewaySettings>('/api/v1/settings', token, {
+	updateSettings: (settings: Partial<GatewaySettings>, token?: string) => request<GatewaySettings>('/api/v1/settings', token, {
 		method: 'PUT',
 		headers: { 'Content-Type': 'application/json' },
 		body: JSON.stringify(settings),

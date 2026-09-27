@@ -2,6 +2,7 @@ export interface GatewayStatus {
   service: string
   version: string
   proxy_addr: string
+  gateway_url: string
   admin_addr: string
   started_at: string
   uptime_seconds: number
@@ -13,6 +14,7 @@ export interface GatewayStatus {
 
 export interface GatewaySettings {
   allowed_hosts: string[]
+  gateway_url: string
 }
 
 export interface GatewayEvent {

@@ -1,9 +1,11 @@
 package admin
 
 import (
+	"context"
 	"crypto/subtle"
 	"embed"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -38,6 +40,12 @@ type ruleInfo struct {
 
 type settingsResponse struct {
 	AllowedHosts []string `json:"allowed_hosts"`
+	GatewayURL   string   `json:"gateway_url"`
+}
+
+type statusResponse struct {
+	gateway.Status
+	GatewayURL string `json:"gateway_url"`
 }
 
 func NewServer(token string, proxy *gateway.Proxy, eventStore *store.Store) *Server {
@@ -70,8 +78,15 @@ func (s *Server) Handler() http.Handler {
 	return securityHeaders(mux)
 }
 
-func (s *Server) status(writer http.ResponseWriter, _ *http.Request) {
-	respondJSON(writer, http.StatusOK, s.proxy.Status())
+func (s *Server) status(writer http.ResponseWriter, request *http.Request) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	gatewayURL, err := s.store.LoadGatewayURL(request.Context())
+	if err != nil {
+		respondError(writer, http.StatusInternalServerError, "settings_load_failed", "failed to load gateway settings")
+		return
+	}
+	respondJSON(writer, http.StatusOK, statusResponse{Status: s.proxy.Status(), GatewayURL: gatewayURL})
 }
 
 func (s *Server) events(writer http.ResponseWriter, request *http.Request) {
@@ -117,8 +132,20 @@ func (s *Server) rules(writer http.ResponseWriter, _ *http.Request) {
 	respondJSON(writer, http.StatusOK, map[string]any{"all_flags": route.AllFlagLetters, "rules": rules})
 }
 
-func (s *Server) settings(writer http.ResponseWriter, _ *http.Request) {
-	respondJSON(writer, http.StatusOK, settingsResponse{AllowedHosts: s.proxy.AllowedHosts()})
+func (s *Server) currentSettings(ctx context.Context) (settingsResponse, error) {
+	gatewayURL, err := s.store.LoadGatewayURL(ctx)
+	return settingsResponse{AllowedHosts: s.proxy.AllowedHosts(), GatewayURL: gatewayURL}, err
+}
+
+func (s *Server) settings(writer http.ResponseWriter, request *http.Request) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+	settings, err := s.currentSettings(request.Context())
+	if err != nil {
+		respondError(writer, http.StatusInternalServerError, "settings_load_failed", "failed to load gateway settings")
+		return
+	}
+	respondJSON(writer, http.StatusOK, settings)
 }
 
 func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Request) {
@@ -127,24 +154,51 @@ func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Reques
 
 	var input struct {
 		AllowedHosts *[]string `json:"allowed_hosts"`
+		GatewayURL   *string   `json:"gateway_url"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64*1024))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || input.AllowedHosts == nil {
-		respondError(writer, http.StatusBadRequest, "invalid_settings", "allowed_hosts must be a JSON array")
+	if err := decoder.Decode(&input); err != nil || (input.AllowedHosts == nil && input.GatewayURL == nil) {
+		respondError(writer, http.StatusBadRequest, "invalid_settings", "provide allowed_hosts as a JSON array or gateway_url as a string")
 		return
 	}
-	hosts, err := config.NormalizeAllowedHosts(*input.AllowedHosts)
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		respondError(writer, http.StatusBadRequest, "invalid_settings", "request must contain a single JSON object")
+		return
+	}
+	if input.AllowedHosts != nil {
+		hosts, err := config.NormalizeAllowedHosts(*input.AllowedHosts)
+		if err != nil {
+			respondError(writer, http.StatusBadRequest, "invalid_allowed_hosts", err.Error())
+			return
+		}
+		input.AllowedHosts = &hosts
+	}
+	if input.GatewayURL != nil {
+		gatewayURL, err := config.NormalizeGatewayURL(*input.GatewayURL)
+		if err != nil {
+			respondError(writer, http.StatusBadRequest, "invalid_gateway_url", err.Error())
+			return
+		}
+		input.GatewayURL = &gatewayURL
+	}
+	settings, err := s.currentSettings(request.Context())
 	if err != nil {
-		respondError(writer, http.StatusBadRequest, "invalid_allowed_hosts", err.Error())
+		respondError(writer, http.StatusInternalServerError, "settings_load_failed", "failed to load gateway settings")
 		return
 	}
-	if err := s.store.SaveAllowedHosts(request.Context(), hosts); err != nil {
+	if err := s.store.SaveSettings(request.Context(), input.AllowedHosts, input.GatewayURL); err != nil {
 		respondError(writer, http.StatusInternalServerError, "settings_save_failed", "failed to save gateway settings")
 		return
 	}
-	s.proxy.SetAllowedHosts(hosts)
-	respondJSON(writer, http.StatusOK, settingsResponse{AllowedHosts: hosts})
+	if input.AllowedHosts != nil {
+		settings.AllowedHosts = *input.AllowedHosts
+		s.proxy.SetAllowedHosts(settings.AllowedHosts)
+	}
+	if input.GatewayURL != nil {
+		settings.GatewayURL = *input.GatewayURL
+	}
+	respondJSON(writer, http.StatusOK, settings)
 }
 
 func (s *Server) auth(next http.Handler) http.Handler {

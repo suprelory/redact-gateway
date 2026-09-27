@@ -45,6 +45,37 @@ func TestAllowedHostsPersistence(t *testing.T) {
 	}
 }
 
+func TestSettingsUpdateRollsBackOnSaveFailure(t *testing.T) {
+	eventStore, err := Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventStore.Close()
+	ctx := context.Background()
+	hosts := []string{"api.openai.com"}
+	gatewayURL := "https://gateway.example.com"
+	if err := eventStore.SaveSettings(ctx, &hosts, &gatewayURL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := eventStore.db.Exec(`CREATE TRIGGER fail_gateway_url BEFORE UPDATE ON settings
+WHEN NEW.key = 'gateway_url' BEGIN SELECT RAISE(ABORT, 'save failed'); END`); err != nil {
+		t.Fatal(err)
+	}
+	changedHosts := []string{"changed.example.com"}
+	changedURL := "https://changed.example.com"
+	if err := eventStore.SaveSettings(ctx, &changedHosts, &changedURL); err == nil {
+		t.Fatal("expected settings update to fail")
+	}
+	gotHosts, _, err := eventStore.LoadAllowedHosts(ctx)
+	if err != nil || !reflect.DeepEqual(gotHosts, hosts) {
+		t.Fatalf("hosts=%v, err=%v; want %v", gotHosts, err, hosts)
+	}
+	gotURL, err := eventStore.LoadGatewayURL(ctx)
+	if err != nil || gotURL != gatewayURL {
+		t.Fatalf("URL=%q, err=%v; want %q", gotURL, err, gatewayURL)
+	}
+}
+
 func TestOpenMigratesEventDetails(t *testing.T) {
 	dataDir := t.TempDir()
 	initial, err := Open(dataDir, 30)

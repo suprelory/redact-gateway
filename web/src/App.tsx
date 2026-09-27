@@ -26,7 +26,8 @@ import {
   X,
 } from 'lucide-react'
 import { api, clearToken, readToken, saveToken } from './api'
-import type { GatewayEvent, GatewayStatus } from './types'
+import { defaultGatewayURL } from './gateway-url'
+import type { GatewayEvent, GatewaySettings, GatewayStatus } from './types'
 
 const navItems = [
   { to: '/', label: '控制台', icon: Gauge },
@@ -103,6 +104,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
   const [dark, setDark] = useState(document.documentElement.dataset.theme === 'dark')
   const statusQuery = useQuery({ queryKey: ['status'], queryFn: () => api.status(), refetchInterval: 5_000 })
   const status = statusQuery.data
+  const gatewayURL = status?.gateway_url || defaultGatewayURL(status?.proxy_addr)
   const toggleTheme = () => {
     const next = !dark
     setDark(next)
@@ -132,7 +134,7 @@ function Shell({ onLogout }: { onLogout: () => void }) {
           <div className="runtime-state">
             <span className={`status-dot ${statusQuery.isError ? 'error' : 'ok'}`} />
             <span>{statusQuery.isError ? '控制面不可用' : '网关运行中'}</span>
-            {status && <code>{status.proxy_addr}</code>}
+            {status && <code title={gatewayURL}>{gatewayURL}</code>}
           </div>
           <div className="top-actions">
             <button className="icon-button" onClick={toggleTheme} title={dark ? '切换浅色主题' : '切换深色主题'}>
@@ -344,31 +346,50 @@ function RuntimeSettings({ status }: { status?: GatewayStatus }) {
 	const queryClient = useQueryClient()
 	const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: () => api.settings() })
 	const [allowedHosts, setAllowedHosts] = useState('')
+	const [gatewayBase, setGatewayBase] = useState('')
 	const saveMutation = useMutation({
-		mutationFn: (hosts: string[]) => api.updateSettings({ allowed_hosts: hosts }),
-		onSuccess: (settings) => {
-			setAllowedHosts(settings.allowed_hosts.join('\n'))
+		mutationFn: (settings: Partial<GatewaySettings>) => api.updateSettings(settings),
+		onSuccess: (settings, changes) => {
+			if (changes.allowed_hosts !== undefined) setAllowedHosts(settings.allowed_hosts.join('\n'))
+			if (changes.gateway_url !== undefined) setGatewayBase(settings.gateway_url)
 			queryClient.setQueryData(['settings'], settings)
-			queryClient.invalidateQueries({ queryKey: ['status'] })
+			queryClient.setQueryData<GatewayStatus>(['status'], (current) => current ? {
+				...current, gateway_url: settings.gateway_url, allowed_hosts: settings.allowed_hosts.length,
+			} : current)
+			void queryClient.invalidateQueries({ queryKey: ['status'] })
 		},
 	})
+	const savedHosts = settingsQuery.data?.allowed_hosts
+	const savedGatewayURL = settingsQuery.data?.gateway_url
 	useEffect(() => {
-		if (settingsQuery.data) setAllowedHosts(settingsQuery.data.allowed_hosts.join('\n'))
-	}, [settingsQuery.data])
+		if (savedHosts !== undefined) setAllowedHosts(savedHosts.join('\n'))
+	}, [savedHosts])
+	useEffect(() => {
+		if (savedGatewayURL !== undefined) setGatewayBase(savedGatewayURL)
+	}, [savedGatewayURL])
 	const saveAllowedHosts = (event: FormEvent) => {
 		event.preventDefault()
 		const hosts = allowedHosts.split(/[\r\n,]+/).map((host) => host.trim()).filter(Boolean)
-		saveMutation.mutate(hosts)
+		saveMutation.mutate({ allowed_hosts: hosts })
 	}
-	const [gatewayBase, setGatewayBase] = useState(() => `http://${window.location.hostname || '127.0.0.1'}:8787`)
+	const saveGatewayURL = (event: FormEvent) => {
+		event.preventDefault()
+		saveMutation.mutate({ gateway_url: gatewayBase.trim() })
+	}
+	const settingsDisabled = !settingsQuery.isSuccess || saveMutation.isPending
+	const savingHosts = saveMutation.variables?.allowed_hosts !== undefined
+	const savingGateway = saveMutation.variables?.gateway_url !== undefined
+	const inferredGatewayURL = defaultGatewayURL(status?.proxy_addr)
+	const exampleBase = gatewayBase.trim().replace(/\/+$/, '') || inferredGatewayURL
 	const examples = [
-		{ label: 'OpenAI 全规则', value: `${gatewayBase}/$https://api.openai.com/v1` },
-		{ label: 'OpenAI 常用规则', value: `${gatewayBase}/HPSE$https://api.openai.com/v1` },
-		{ label: 'Anthropic', value: `${gatewayBase}/PSE$https://api.anthropic.com` },
+		{ label: 'OpenAI 全规则', value: `${exampleBase}/$https://api.openai.com/v1` },
+		{ label: 'OpenAI 常用规则', value: `${exampleBase}/HPSE$https://api.openai.com/v1` },
+		{ label: 'Anthropic', value: `${exampleBase}/PSE$https://api.anthropic.com` },
 	]
 	return (
 		<section className="page">
 			<PageHeader title="运行设置" meta="运行时信息" />
+			{settingsQuery.isError && <ErrorBanner message="无法读取运行设置，请刷新后重试。" />}
 			<section className="panel settings-band">
 				<PanelTitle title="上游白名单" />
 				<form className="settings-form" onSubmit={saveAllowedHosts}>
@@ -377,25 +398,43 @@ function RuntimeSettings({ status }: { status?: GatewayStatus }) {
 						id="allowed-hosts"
 						className="plain-input settings-textarea"
 						value={allowedHosts}
-						onChange={(event) => setAllowedHosts(event.target.value)}
+						onChange={(event) => { setAllowedHosts(event.target.value); saveMutation.reset() }}
 						placeholder="api.openai.com\napi.anthropic.com"
-						disabled={settingsQuery.isPending || saveMutation.isPending}
+						disabled={settingsDisabled}
 					/>
 					<p className="field-help">每行一个域名。留空表示允许所有公网 HTTP/HTTPS 上游，私有地址仍受安全策略限制。</p>
-					{settingsQuery.isError && <ErrorBanner message="无法读取上游白名单。" />}
-					{saveMutation.isError && <ErrorBanner message={saveMutation.error instanceof Error ? saveMutation.error.message : '保存上游白名单失败。'} />}
+					{saveMutation.isError && savingHosts && <ErrorBanner message={saveMutation.error instanceof Error ? saveMutation.error.message : '保存上游白名单失败。'} />}
 					<div className="settings-actions">
-						<button className="primary-button action-button" type="submit" disabled={settingsQuery.isPending || saveMutation.isPending}>
-							<Save />{saveMutation.isPending ? '保存中' : '保存白名单'}
+						<button className="primary-button action-button" type="submit" disabled={settingsDisabled}>
+							<Save />{saveMutation.isPending && savingHosts ? '保存中' : '保存白名单'}
 						</button>
-						{saveMutation.isSuccess && <span className="success-message"><Check />已保存并立即生效</span>}
+						{saveMutation.isSuccess && savingHosts && <span className="success-message"><Check />已保存并立即生效</span>}
 					</div>
 				</form>
 			</section>
 			<section className="panel settings-band">
 				<PanelTitle title="网关地址" />
-				<label className="field-label" htmlFor="gateway-base">数据面基础地址</label>
-				<input id="gateway-base" className="plain-input" value={gatewayBase} onChange={(event) => setGatewayBase(event.target.value.replace(/\/$/, ''))} />
+				<form className="settings-form" onSubmit={saveGatewayURL}>
+					<label className="field-label" htmlFor="gateway-base">数据面基础地址</label>
+					<input
+						id="gateway-base"
+						className="plain-input"
+						type="url"
+						value={gatewayBase}
+						onChange={(event) => { setGatewayBase(event.target.value); saveMutation.reset() }}
+						placeholder={inferredGatewayURL}
+						aria-describedby="gateway-base-help"
+						disabled={settingsDisabled}
+					/>
+					<p id="gateway-base-help" className="field-help">填写完整 HTTP/HTTPS 地址，例如 https://gateway.example.com；使用自定义端口时请一并填写。保存后用于顶部状态和调用示例，留空则自动识别。</p>
+					{saveMutation.isError && savingGateway && <ErrorBanner message={saveMutation.error instanceof Error ? saveMutation.error.message : '保存网关地址失败。'} />}
+					<div className="settings-actions">
+						<button className="primary-button action-button" type="submit" disabled={settingsDisabled}>
+							<Save />{saveMutation.isPending && savingGateway ? '保存中' : '保存网关地址'}
+						</button>
+						{saveMutation.isSuccess && savingGateway && <span className="success-message"><Check />已保存并立即生效</span>}
+					</div>
+				</form>
 				<div className="copy-list">
 					{examples.map((example) => <CopyField key={example.label} {...example} />)}
 				</div>

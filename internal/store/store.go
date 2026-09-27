@@ -78,7 +78,10 @@ type Store struct {
 	db *sql.DB
 }
 
-const allowedHostsSettingKey = "allowed_hosts"
+const (
+	allowedHostsSettingKey = "allowed_hosts"
+	gatewayURLSettingKey   = "gateway_url"
+)
 
 func Open(dataDir string, retentionDays int) (*Store, error) {
 	path := filepath.Join(dataDir, "gateway.sqlite3")
@@ -220,16 +223,54 @@ func (s *Store) LoadAllowedHosts(ctx context.Context) ([]string, bool, error) {
 }
 
 func (s *Store) SaveAllowedHosts(ctx context.Context, hosts []string) error {
-	encoded, err := json.Marshal(hosts)
-	if err != nil {
-		return fmt.Errorf("encode allowed hosts setting: %w", err)
+	return s.SaveSettings(ctx, &hosts, nil)
+}
+
+func (s *Store) LoadGatewayURL(ctx context.Context) (string, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, gatewayURLSettingKey).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	_, err = s.db.ExecContext(ctx, `
+	if err != nil {
+		return "", fmt.Errorf("query gateway URL setting: %w", err)
+	}
+	var gatewayURL string
+	if err := json.Unmarshal([]byte(encoded), &gatewayURL); err != nil {
+		return "", fmt.Errorf("decode gateway URL setting: %w", err)
+	}
+	return gatewayURL, nil
+}
+
+// SaveSettings atomically updates the supplied settings, leaving omitted fields
+// untouched so independent console forms cannot overwrite each other's values.
+func (s *Store) SaveSettings(ctx context.Context, hosts *[]string, gatewayURL *string) error {
+	values := make(map[string]any, 2)
+	if hosts != nil {
+		values[allowedHostsSettingKey] = *hosts
+	}
+	if gatewayURL != nil {
+		values[gatewayURLSettingKey] = *gatewayURL
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin settings update: %w", err)
+	}
+	defer tx.Rollback()
+	for key, value := range values {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("encode %s setting: %w", key, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)
 ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
-`, allowedHostsSettingKey, string(encoded), time.Now().UnixMilli())
-	if err != nil {
-		return fmt.Errorf("save allowed hosts setting: %w", err)
+		`, key, string(encoded), time.Now().UnixMilli()); err != nil {
+			return fmt.Errorf("save %s setting: %w", key, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit settings update: %w", err)
 	}
 	return nil
 }
