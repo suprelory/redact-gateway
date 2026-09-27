@@ -30,6 +30,8 @@ RUN apk add --no-cache ca-certificates tzdata \
     && mkdir -p /data \
     && chown -R redact:redact /data
 COPY --from=go-builder /out/redact-gateway /usr/local/bin/redact-gateway
+COPY --from=go-builder /src/third_party /usr/share/licenses/redact-gateway/third_party
+COPY --from=go-builder /src/docs/detection.md /usr/share/doc/redact-gateway/detection.md
 
 USER 10001:10001
 WORKDIR /data

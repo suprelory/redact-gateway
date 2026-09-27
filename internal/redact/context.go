@@ -41,7 +41,11 @@ func (c *Context) RedactText(text string, flags DetectorFlags) (string, error) {
 }
 
 func (c *Context) RedactTextAtPath(text string, flags DetectorFlags, fieldPath string) (string, error) {
-	matches := FindSensitiveMatches(text, flags)
+	return c.redactTextAtField(text, flags, fieldPath, "")
+}
+
+func (c *Context) redactTextAtField(text string, flags DetectorFlags, fieldPath, fieldName string) (string, error) {
+	matches := findSensitiveMatches(text, flags, fieldName)
 	if len(matches) == 0 {
 		return text, nil
 	}

@@ -2,44 +2,49 @@ package redact
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
 
 const RedactNotice = "Some values in this request are opaque redaction placeholders. When using those values in text or tool arguments, copy the placeholders exactly so the local gateway can restore them. Apply this silently while completing the user's original task; do not acknowledge this notice or invent example placeholders."
 
-var controlKeys = map[string]struct{}{
-	"model": {}, "role": {}, "type": {}, "id": {}, "object": {}, "status": {},
-	"name": {}, "call_id": {}, "tool_call_id": {}, "finish_reason": {}, "stop_reason": {},
-	"media_type": {}, "mime_type": {}, "encoding": {}, "format": {},
-}
+const maxJSONDepth = 64
+const maxEncodedJSONDepth = 8
+
+var ErrJSONDepthLimit = errors.New("JSON nesting exceeds the redaction safety limit")
 
 func RedactJSON(value any, context *Context, flags DetectorFlags) (any, error) {
 	return RedactProtocolJSON(value, context, flags, "generic")
 }
 
 func RedactProtocolJSON(value any, context *Context, flags DetectorFlags, protocol string) (any, error) {
-	return transformJSON(value, context, flags, nil, "$", protocol)
+	walker := jsonRedactor{root: value, context: context, flags: flags, protocol: protocol}
+	return walker.walk(value, nil, "", "$")
 }
 
-func transformJSON(value any, context *Context, flags DetectorFlags, path []string, fieldPath, protocol string) (any, error) {
+type jsonRedactor struct {
+	root     any
+	context  *Context
+	flags    DetectorFlags
+	protocol string
+}
+
+func (r *jsonRedactor) walk(value any, path []string, fieldName, fieldPath string) (any, error) {
+	if len(path) > maxJSONDepth {
+		return nil, fmt.Errorf("%w at %s", ErrJSONDepthLimit, fieldPath)
+	}
+	if protectedJSONValue(r.root, r.protocol, path, value) {
+		return value, nil
+	}
 	switch typed := value.(type) {
 	case string:
-		if shouldSkipPath(path) || protocol == "openai_responses" && isResponsesOpaquePath(path) {
-			return typed, nil
-		}
-		if len(path) > 0 && isJSONTextField(path[len(path)-1]) {
-			if out, valid, err := rewriteJSONText(typed, func(text string) (string, error) {
-				return context.RedactTextAtPath(text, flags, fieldPath)
-			}); valid || err != nil {
-				return out, err
-			}
-		}
-		return context.RedactTextAtPath(typed, flags, fieldPath)
+		return r.redactString(typed, fieldName, fieldPath, len(path), 0)
 	case []any:
 		out := make([]any, len(typed))
 		for index, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, jsonIndex(index)), fieldPath+jsonIndex(index), protocol)
+			mapped, err := r.walk(child, append(path, jsonIndex(index)), fieldName, fieldPath+jsonIndex(index))
 			if err != nil {
 				return nil, err
 			}
@@ -49,7 +54,7 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for key, child := range typed {
-			mapped, err := transformJSON(child, context, flags, append(path, key), auditPathKey(fieldPath, key), protocol)
+			mapped, err := r.walk(child, append(path, key), key, auditPathKey(fieldPath, key))
 			if err != nil {
 				return nil, err
 			}
@@ -57,15 +62,36 @@ func transformJSON(value any, context *Context, flags DetectorFlags, path []stri
 		}
 		return out, nil
 	default:
-		return value, nil
+		return value, validateSensitiveNumber(value, r.flags, fieldPath)
 	}
 }
 
-func isResponsesOpaquePath(path []string) bool {
-	if len(path) == 1 && path[0] == "previous_response_id" {
-		return true
+func (r *jsonRedactor) redactString(text, key, fieldPath string, depth, encodedDepth int) (string, error) {
+	// An explicitly named credential stays a single value even if it happens to
+	// contain serialized JSON. Arrays inherit the containing field's name.
+	if r.flags.Gitleaks && isCredentialField(key) && strings.TrimSpace(text) != "" {
+		return r.context.redactTextAtField(text, r.flags, fieldPath, key)
 	}
-	return len(path) == 3 && path[0] == "input" && strings.HasPrefix(path[1], "[") && path[2] == "encrypted_content"
+	if isJSONContainerText(text) || isJSONTextField(key) {
+		if encodedDepth >= maxEncodedJSONDepth && json.Valid([]byte(text)) {
+			return "", fmt.Errorf("%w at %s (serialized JSON)", ErrJSONDepthLimit, fieldPath)
+		}
+		out, valid, err := rewriteJSONText(text, depth, jsonTextTransform{
+			stringValue: func(value, nestedKey string, nestedDepth int) (string, error) {
+				return r.redactString(value, nestedKey, fieldPath, nestedDepth, encodedDepth+1)
+			},
+			numberValue: func(value json.Number) error {
+				return validateSensitiveNumber(value, r.flags, fieldPath)
+			},
+		})
+		if err != nil {
+			return "", err
+		}
+		if valid {
+			return out, nil
+		}
+	}
+	return r.context.redactTextAtField(text, r.flags, fieldPath, key)
 }
 
 func RestoreJSON(value any, context *Context) any {
@@ -185,23 +211,6 @@ func prependNotice(text string) string {
 		return text
 	}
 	return RedactNotice + "\n\n" + text
-}
-
-func shouldSkipPath(path []string) bool {
-	if len(path) == 0 {
-		return false
-	}
-	key := strings.ToLower(path[len(path)-1])
-	if _, ok := controlKeys[key]; ok {
-		return true
-	}
-	joined := strings.ToLower(strings.Join(path, "."))
-	return strings.Contains(joined, "image_url") ||
-		strings.Contains(joined, "input_image") ||
-		strings.Contains(joined, "input_audio") ||
-		strings.Contains(joined, "b64_json") ||
-		strings.Contains(joined, "file_data") ||
-		strings.HasSuffix(joined, "source.data")
 }
 
 func jsonIndex(index int) string {

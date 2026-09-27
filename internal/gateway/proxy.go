@@ -266,7 +266,7 @@ func (p *Proxy) prepareRequestBody(request *http.Request, proxyRoute route.Proxy
 	protocol := redact.DetectProtocol(value, proxyRoute.Upstream.Path, request.Header.Get("Anthropic-Version") != "")
 	redactedValue, err := redact.RedactProtocolJSON(value, contextMap, flags, protocol)
 	if err != nil {
-		return nil, "generic", int64(len(raw)), err
+		return nil, protocol, int64(len(raw)), err
 	}
 	if contextMap.HasMappings() {
 		redact.InjectNotice(redactedValue, protocol)
@@ -416,6 +416,10 @@ var (
 
 func requestErrorStatus(err error) (int, string) {
 	switch {
+	case errors.Is(err, redact.ErrSensitiveNumber):
+		return http.StatusBadRequest, "numeric_sensitive_value"
+	case errors.Is(err, redact.ErrJSONDepthLimit):
+		return http.StatusRequestEntityTooLarge, "json_nesting_limit"
 	case errors.Is(err, errRequestTooLarge), errors.Is(err, redact.ErrRedactionLimit):
 		return http.StatusRequestEntityTooLarge, "request_too_large"
 	case errors.Is(err, errUnsupportedBody):

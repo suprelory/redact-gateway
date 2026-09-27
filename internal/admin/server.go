@@ -121,13 +121,13 @@ func (s *Server) stats(writer http.ResponseWriter, request *http.Request) {
 
 func (s *Server) rules(writer http.ResponseWriter, _ *http.Request) {
 	rules := []ruleInfo{
-		{Flag: "H", Name: "高熵字符串", Description: "检测混合字母数字的高随机度令牌", Default: true},
+		{Flag: "H", Name: "高熵字符串", Description: "按长度与字符组合识别随机令牌，降低普通代码标识符误报", Default: true},
 		{Flag: "P", Name: "电话号码", Description: "中国大陆手机号和国际电话号码", Default: true},
 		{Flag: "S", Name: "sk- 密钥", Description: "检测常见 sk- 前缀 API 密钥", Default: true},
 		{Flag: "I", Name: "身份证", Description: "带校验位验证的 18 位中国身份证号", Default: true},
 		{Flag: "B", Name: "银行卡", Description: "13 至 19 位并通过 Luhn 校验的卡号", Default: true},
 		{Flag: "E", Name: "邮箱", Description: "标准电子邮箱地址", Default: true},
-		{Flag: "G", Name: "凭据规则包", Description: "私钥、JWT、云密钥、GitHub/GitLab Token 和连接串", Default: true},
+		{Flag: "G", Name: "凭据规则包", Description: "云服务、AI、代码托管等凭据，私钥、JWT、赋值语句和敏感字段", Default: true},
 	}
 	respondJSON(writer, http.StatusOK, map[string]any{"all_flags": route.AllFlagLetters, "rules": rules})
 }

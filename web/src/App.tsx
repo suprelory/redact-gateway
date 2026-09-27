@@ -50,6 +50,8 @@ const ruleLabels: Record<string, string> = {
 	CONNSTR: '连接串',
 	BEARER: 'Bearer Token',
 	ENTROPY: '高熵字符串',
+	CREDENTIAL: '服务凭据',
+	SECRET: '敏感信息',
 }
 
 export default function App() {

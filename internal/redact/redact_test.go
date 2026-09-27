@@ -27,7 +27,7 @@ func TestAuditPaths(t *testing.T) {
 			map[string]any{"type": "tool_result", "content": secret},
 		}}, []string{"$.content[0].input.email", "$.content[1].content"}},
 		{"no matches", map[string]any{"content": "hello"}, []string{}},
-		{"protected fields", map[string]any{"model": secret, "image_url": map[string]any{"url": secret}}, []string{}},
+		{"generic business fields", map[string]any{"model": secret, "image_url": map[string]any{"url": secret}}, []string{"$.model", "$.image_url.url"}},
 		{"sensitive key", map[string]any{secret: map[string]any{"text": secret}}, []string{`$["<redacted-key>"].text`}},
 	}
 	for _, test := range tests {
@@ -105,12 +105,14 @@ func TestJSONWalkSkipsControlAndMultimodalFields(t *testing.T) {
 	t.Parallel()
 	context := NewContext(20)
 	input := map[string]any{
-		"model":     "alice@example.com",
-		"messages":  []any{map[string]any{"role": "user", "content": "alice@example.com"}},
-		"image_url": map[string]any{"url": "https://example.com/alice@example.com.png"},
-		"tool":      map[string]any{"arguments": `{"email":"alice@example.com"}`},
+		"model": "alice@example.com",
+		"messages": []any{map[string]any{"role": "user", "content": []any{
+			map[string]any{"type": "text", "text": "alice@example.com"},
+			map[string]any{"type": "image_url", "image_url": map[string]any{"url": "https://example.com/alice@example.com.png"}},
+		}}},
+		"tool": map[string]any{"arguments": `{"email":"alice@example.com"}`},
 	}
-	output, err := RedactJSON(input, context, DetectorFlags{Email: true})
+	output, err := RedactProtocolJSON(input, context, DetectorFlags{Email: true}, "openai_chat")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +127,7 @@ func TestJSONWalkSkipsControlAndMultimodalFields(t *testing.T) {
 	if strings.Count(text, "{{RG_EMAIL_") != 2 {
 		t.Fatalf("expected prompt and tool argument redactions: %s", text)
 	}
-	wantFields := []string{"$.messages[0].content", "$.tool.arguments"}
+	wantFields := []string{"$.messages[0].content[0].text", "$.tool.arguments"}
 	if fields := context.RedactionFields(); !reflect.DeepEqual(fields, wantFields) {
 		t.Fatalf("redaction fields = %#v, want %#v", fields, wantFields)
 	}
