@@ -81,6 +81,7 @@ type Store struct {
 const (
 	allowedHostsSettingKey = "allowed_hosts"
 	gatewayURLSettingKey   = "gateway_url"
+	enabledRulesSettingKey = "enabled_rules"
 )
 
 func Open(dataDir string, retentionDays int) (*Store, error) {
@@ -223,7 +224,7 @@ func (s *Store) LoadAllowedHosts(ctx context.Context) ([]string, bool, error) {
 }
 
 func (s *Store) SaveAllowedHosts(ctx context.Context, hosts []string) error {
-	return s.SaveSettings(ctx, &hosts, nil)
+	return s.SaveSettings(ctx, &hosts, nil, nil)
 }
 
 func (s *Store) LoadGatewayURL(ctx context.Context) (string, error) {
@@ -242,15 +243,37 @@ func (s *Store) LoadGatewayURL(ctx context.Context) (string, error) {
 	return gatewayURL, nil
 }
 
+func (s *Store) LoadEnabledRules(ctx context.Context) (string, bool, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, enabledRulesSettingKey).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("query enabled rules setting: %w", err)
+	}
+	var rules *string
+	if err := json.Unmarshal([]byte(encoded), &rules); err != nil {
+		return "", false, fmt.Errorf("decode enabled rules setting: %w", err)
+	}
+	if rules == nil {
+		return "", false, fmt.Errorf("decode enabled rules setting: expected a string")
+	}
+	return *rules, true, nil
+}
+
 // SaveSettings atomically updates the supplied settings, leaving omitted fields
 // untouched so independent console forms cannot overwrite each other's values.
-func (s *Store) SaveSettings(ctx context.Context, hosts *[]string, gatewayURL *string) error {
-	values := make(map[string]any, 2)
+func (s *Store) SaveSettings(ctx context.Context, hosts *[]string, gatewayURL, enabledRules *string) error {
+	values := make(map[string]any, 3)
 	if hosts != nil {
 		values[allowedHostsSettingKey] = *hosts
 	}
 	if gatewayURL != nil {
 		values[gatewayURLSettingKey] = *gatewayURL
+	}
+	if enabledRules != nil {
+		values[enabledRulesSettingKey] = *enabledRules
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

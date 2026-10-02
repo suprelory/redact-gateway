@@ -27,7 +27,7 @@ import {
 } from 'lucide-react'
 import { api, clearToken, readToken, saveToken } from './api'
 import { defaultGatewayURL } from './gateway-url'
-import type { GatewayEvent, GatewaySettings, GatewayStatus } from './types'
+import type { GatewayEvent, GatewayRules, GatewaySettings, GatewayStatus } from './types'
 
 const navItems = [
   { to: '/', label: '控制台', icon: Gauge },
@@ -325,21 +325,75 @@ function Logs() {
 }
 
 function Rules() {
+  const queryClient = useQueryClient()
   const rulesQuery = useQuery({ queryKey: ['rules'], queryFn: api.rules })
+  const [draft, setDraft] = useState<string | null>(null)
+  const saveMutation = useMutation({
+    mutationFn: (enabledRules: string) => api.updateSettings({ enabled_rules: enabledRules }),
+    onMutate: () => queryClient.cancelQueries({ queryKey: ['rules'] }),
+    onSuccess: (settings) => {
+      queryClient.setQueryData(['settings'], settings)
+      queryClient.setQueryData<GatewayRules>(['rules'], (current) => current ? {
+        ...current,
+        enabled_rules: settings.enabled_rules,
+        rules: current.rules.map((rule) => ({ ...rule, enabled: settings.enabled_rules.includes(rule.flag) })),
+      } : current)
+      setDraft(null)
+    },
+  })
+  const data = rulesQuery.data
+  const selected = draft ?? data?.enabled_rules ?? ''
+  const dirty = data !== undefined && selected !== data.enabled_rules
+  const disabled = !rulesQuery.isSuccess || saveMutation.isPending
+  const selectRules = (flags: string) => {
+    setDraft(flags)
+    saveMutation.reset()
+  }
+  const saveRules = (event: FormEvent) => {
+    event.preventDefault()
+    if (!disabled && dirty) saveMutation.mutate(selected)
+  }
   return (
     <section className="page">
-      <PageHeader title="脱敏规则" meta={`默认组合 ${rulesQuery.data?.all_flags ?? 'HPSIBEG'}`} />
-      <section className="panel rule-panel">
+      <PageHeader title="脱敏规则" meta={data ? `已启用 ${data.enabled_rules.length} / ${data.rules.length} 项` : undefined} action={
+        <button className="icon-button bordered" type="button" title="刷新脱敏规则" aria-label="刷新脱敏规则"
+          disabled={rulesQuery.isFetching || saveMutation.isPending} onClick={() => { void rulesQuery.refetch() }}>
+          <RefreshCw className={rulesQuery.isFetching ? 'spin' : undefined} />
+        </button>
+      } />
+      {rulesQuery.isError && <ErrorBanner message="无法读取脱敏规则，请点击刷新重试。" />}
+      <form className="panel rule-panel" onSubmit={saveRules} aria-busy={rulesQuery.isFetching || saveMutation.isPending}>
+        <p className="field-help">保存后对新请求生效，重启后保留。URL 中的标记仅从已启用规则中筛选；全部关闭会停止新增脱敏。</p>
+        <div className="rule-actions">
+          <button className="secondary-button" type="button" disabled={disabled} onClick={() => selectRules(data?.all_flags ?? '')}>全部开启</button>
+          <button className="secondary-button" type="button" disabled={disabled} onClick={() => selectRules('')}>全部关闭</button>
+        </div>
+        {rulesQuery.isPending && <div className="empty-state">正在加载脱敏规则…</div>}
         <div className="rule-grid">
-          {(rulesQuery.data?.rules ?? []).map((rule) => (
-            <div className="rule-row" key={rule.flag}>
+          {(data?.rules ?? []).map((rule) => (
+            <div className="rule-row" key={rule.flag} data-enabled={selected.includes(rule.flag)}>
               <span className="flag-box">{rule.flag}</span>
-              <span><strong>{rule.name}</strong><small>{rule.description}</small></span>
-              <span className="enabled-mark"><Check />已启用</span>
+              <span><strong>{rule.name}</strong><small id={`rule-description-${rule.flag}`}>{rule.description}</small></span>
+              <button className="rule-toggle" type="button" role="switch" aria-label={rule.name}
+                aria-checked={selected.includes(rule.flag)} aria-describedby={`rule-description-${rule.flag}`} disabled={disabled}
+                onClick={() => selectRules((data?.all_flags ?? '').split('').filter((flag) =>
+                  flag === rule.flag ? !selected.includes(flag) : selected.includes(flag),
+                ).join(''))}>
+                <span className="switch-track" aria-hidden="true" />
+                <span>{selected.includes(rule.flag) ? '开启' : '关闭'}</span>
+              </button>
             </div>
           ))}
         </div>
-      </section>
+        {saveMutation.isError && <ErrorBanner message={saveMutation.error instanceof Error ? saveMutation.error.message : '保存脱敏规则失败。'} />}
+        <div className="settings-actions rule-actions">
+          <button className="primary-button action-button" type="submit" disabled={disabled || !dirty}>
+            <Save />{saveMutation.isPending ? '保存中' : '保存规则'}
+          </button>
+          {dirty && <span className="field-help">有未保存的更改</span>}
+          {saveMutation.isSuccess && !dirty && <span className="success-message" role="status"><Check />已保存并立即生效</span>}
+        </div>
+      </form>
     </section>
   )
 }
@@ -384,7 +438,7 @@ function RuntimeSettings({ status }: { status?: GatewayStatus }) {
 	const inferredGatewayURL = defaultGatewayURL(status?.proxy_addr)
 	const exampleBase = gatewayBase.trim().replace(/\/+$/, '') || inferredGatewayURL
 	const examples = [
-		{ label: 'OpenAI 全规则', value: `${exampleBase}/$https://api.openai.com/v1` },
+		{ label: 'OpenAI 已启用规则', value: `${exampleBase}/$https://api.openai.com/v1` },
 		{ label: 'OpenAI 常用规则', value: `${exampleBase}/HPSE$https://api.openai.com/v1` },
 		{ label: 'Anthropic', value: `${exampleBase}/PSE$https://api.anthropic.com` },
 	]
@@ -440,6 +494,7 @@ function RuntimeSettings({ status }: { status?: GatewayStatus }) {
 				<div className="copy-list">
 					{examples.map((example) => <CopyField key={example.label} {...example} />)}
 				</div>
+				<p className="field-help">调用示例中的规则组合均受“脱敏规则”页面的开关控制。</p>
 			</section>
 			<section className="panel settings-band">
 				<PanelTitle title="安全边界" />
@@ -473,7 +528,7 @@ function LogRow({ event, onDetails }: { event: GatewayEvent; onDetails: () => vo
       <td className="host-cell">{event.upstream_host}</td>
       <td><code className="path-code">{event.upstream_path}</code></td>
       <td><Protocol value={event.protocol} streaming={event.streaming} /></td>
-      <td><code>{event.flags}</code></td>
+      <td><code>{event.flags || '未启用'}</code></td>
       <td><span className="count-pair"><b>{event.redaction_count}</b><span>/</span>{event.restore_count}</span></td>
       <td><RestoreState event={event} /></td>
       <td><StatusCode value={event.status} /></td>
@@ -520,7 +575,7 @@ function LogDetailDialog({ event, onClose }: { event: GatewayEvent; onClose: () 
 						<div><dt>协议</dt><dd><Protocol value={event.protocol} streaming={event.streaming} /></dd></div>
 						<div><dt>状态</dt><dd><StatusCode value={event.status} /></dd></div>
 						<div><dt>耗时</dt><dd>{event.duration_ms} ms</dd></div>
-						<div><dt>规则组合</dt><dd><code>{event.flags || '—'}</code></dd></div>
+						<div><dt>规则组合</dt><dd><code>{event.flags || '未启用'}</code></dd></div>
 					</dl>
 					<DetailSection title="还原情况">
 						<div><RestoreState event={event} /></div>

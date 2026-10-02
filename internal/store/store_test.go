@@ -54,7 +54,8 @@ func TestSettingsUpdateRollsBackOnSaveFailure(t *testing.T) {
 	ctx := context.Background()
 	hosts := []string{"api.openai.com"}
 	gatewayURL := "https://gateway.example.com"
-	if err := eventStore.SaveSettings(ctx, &hosts, &gatewayURL); err != nil {
+	enabledRules := "PE"
+	if err := eventStore.SaveSettings(ctx, &hosts, &gatewayURL, &enabledRules); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := eventStore.db.Exec(`CREATE TRIGGER fail_gateway_url BEFORE UPDATE ON settings
@@ -63,7 +64,8 @@ WHEN NEW.key = 'gateway_url' BEGIN SELECT RAISE(ABORT, 'save failed'); END`); er
 	}
 	changedHosts := []string{"changed.example.com"}
 	changedURL := "https://changed.example.com"
-	if err := eventStore.SaveSettings(ctx, &changedHosts, &changedURL); err == nil {
+	changedRules := ""
+	if err := eventStore.SaveSettings(ctx, &changedHosts, &changedURL, &changedRules); err == nil {
 		t.Fatal("expected settings update to fail")
 	}
 	gotHosts, _, err := eventStore.LoadAllowedHosts(ctx)
@@ -73,6 +75,26 @@ WHEN NEW.key = 'gateway_url' BEGIN SELECT RAISE(ABORT, 'save failed'); END`); er
 	gotURL, err := eventStore.LoadGatewayURL(ctx)
 	if err != nil || gotURL != gatewayURL {
 		t.Fatalf("URL=%q, err=%v; want %q", gotURL, err, gatewayURL)
+	}
+	gotRules, found, err := eventStore.LoadEnabledRules(ctx)
+	if err != nil || !found || gotRules != enabledRules {
+		t.Fatalf("rules=%q, found=%v, err=%v; want %q", gotRules, found, err, enabledRules)
+	}
+}
+
+func TestLoadEnabledRulesRejectsMalformedSettings(t *testing.T) {
+	eventStore, err := Open(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer eventStore.Close()
+	for _, encoded := range []string{"null", "true", "[]", "invalid JSON"} {
+		if _, err := eventStore.db.Exec(`INSERT OR REPLACE INTO settings (key, value_json, updated_at) VALUES (?, ?, 0)`, enabledRulesSettingKey, encoded); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := eventStore.LoadEnabledRules(context.Background()); err == nil {
+			t.Fatalf("accepted malformed rule settings: %s", encoded)
+		}
 	}
 }
 

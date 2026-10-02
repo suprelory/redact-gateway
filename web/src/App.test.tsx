@@ -37,7 +37,7 @@ function renderLogs(events: GatewayEvent[], total = events.length) {
 
 function renderSettings(initialURL = '') {
   saveToken('test-admin-token')
-  let settings: GatewaySettings = { allowed_hosts: ['api.openai.com'], gateway_url: initialURL }
+  let settings: GatewaySettings = { allowed_hosts: ['api.openai.com'], gateway_url: initialURL, enabled_rules: 'HPSIBEG' }
   vi.spyOn(api, 'status').mockImplementation(async () => ({
     ...sampleStatus, gateway_url: settings.gateway_url, allowed_hosts: settings.allowed_hosts.length,
   }))

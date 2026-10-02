@@ -36,11 +36,13 @@ type ruleInfo struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Default     bool   `json:"default"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type settingsResponse struct {
 	AllowedHosts []string `json:"allowed_hosts"`
 	GatewayURL   string   `json:"gateway_url"`
+	EnabledRules string   `json:"enabled_rules"`
 }
 
 type statusResponse struct {
@@ -129,12 +131,21 @@ func (s *Server) rules(writer http.ResponseWriter, _ *http.Request) {
 		{Flag: "E", Name: "邮箱", Description: "标准电子邮箱地址", Default: true},
 		{Flag: "G", Name: "凭据规则包", Description: "云服务、AI、代码托管等凭据，私钥、JWT、赋值语句和敏感字段", Default: true},
 	}
-	respondJSON(writer, http.StatusOK, map[string]any{"all_flags": route.AllFlagLetters, "rules": rules})
+	enabledRules := s.proxy.EnabledRules().Raw
+	for index := range rules {
+		rules[index].Enabled = strings.Contains(enabledRules, rules[index].Flag)
+	}
+	respondJSON(writer, http.StatusOK, map[string]any{
+		"all_flags": route.AllFlagLetters, "enabled_rules": enabledRules, "rules": rules,
+	})
 }
 
 func (s *Server) currentSettings(ctx context.Context) (settingsResponse, error) {
 	gatewayURL, err := s.store.LoadGatewayURL(ctx)
-	return settingsResponse{AllowedHosts: s.proxy.AllowedHosts(), GatewayURL: gatewayURL}, err
+	return settingsResponse{
+		AllowedHosts: s.proxy.AllowedHosts(), GatewayURL: gatewayURL,
+		EnabledRules: s.proxy.EnabledRules().Raw,
+	}, err
 }
 
 func (s *Server) settings(writer http.ResponseWriter, request *http.Request) {
@@ -155,11 +166,12 @@ func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Reques
 	var input struct {
 		AllowedHosts *[]string `json:"allowed_hosts"`
 		GatewayURL   *string   `json:"gateway_url"`
+		EnabledRules *string   `json:"enabled_rules"`
 	}
 	decoder := json.NewDecoder(http.MaxBytesReader(writer, request.Body, 64*1024))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&input); err != nil || (input.AllowedHosts == nil && input.GatewayURL == nil) {
-		respondError(writer, http.StatusBadRequest, "invalid_settings", "provide allowed_hosts as a JSON array or gateway_url as a string")
+	if err := decoder.Decode(&input); err != nil || (input.AllowedHosts == nil && input.GatewayURL == nil && input.EnabledRules == nil) {
+		respondError(writer, http.StatusBadRequest, "invalid_settings", "provide allowed_hosts as a JSON array, gateway_url as a string, or enabled_rules as a string")
 		return
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
@@ -182,12 +194,22 @@ func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Reques
 		}
 		input.GatewayURL = &gatewayURL
 	}
+	var enabledRules route.Flags
+	if input.EnabledRules != nil {
+		var err error
+		enabledRules, err = route.ParseEnabledFlags(*input.EnabledRules)
+		if err != nil {
+			respondError(writer, http.StatusBadRequest, "invalid_enabled_rules", err.Error())
+			return
+		}
+		input.EnabledRules = &enabledRules.Raw
+	}
 	settings, err := s.currentSettings(request.Context())
 	if err != nil {
 		respondError(writer, http.StatusInternalServerError, "settings_load_failed", "failed to load gateway settings")
 		return
 	}
-	if err := s.store.SaveSettings(request.Context(), input.AllowedHosts, input.GatewayURL); err != nil {
+	if err := s.store.SaveSettings(request.Context(), input.AllowedHosts, input.GatewayURL, input.EnabledRules); err != nil {
 		respondError(writer, http.StatusInternalServerError, "settings_save_failed", "failed to save gateway settings")
 		return
 	}
@@ -197,6 +219,10 @@ func (s *Server) updateSettings(writer http.ResponseWriter, request *http.Reques
 	}
 	if input.GatewayURL != nil {
 		settings.GatewayURL = *input.GatewayURL
+	}
+	if input.EnabledRules != nil {
+		settings.EnabledRules = enabledRules.Raw
+		s.proxy.SetEnabledRules(enabledRules)
 	}
 	respondJSON(writer, http.StatusOK, settings)
 }

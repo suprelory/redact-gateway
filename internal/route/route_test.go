@@ -36,3 +36,40 @@ func TestRejectsUnknownFlagAndUserInfo(t *testing.T) {
 		t.Fatal("expected user info error")
 	}
 }
+
+func TestConfiguredFlags(t *testing.T) {
+	requested, err := ParseFlags("EPPE")
+	if err != nil || requested.Raw != "EPPE" {
+		t.Fatalf("URL parsing changed the requested flags: %+v, %v", requested, err)
+	}
+	for _, test := range []struct{ input, want string }{
+		{"", ""}, {"EPPE", "PE"}, {"GEBISPH", AllFlagLetters},
+	} {
+		got, err := ParseEnabledFlags(test.input)
+		if err != nil || got.Raw != test.want {
+			t.Fatalf("ParseEnabledFlags(%q) = %+v, %v; want %q", test.input, got, err, test.want)
+		}
+		if test.input == "" && got != (Flags{}) {
+			t.Fatal("an empty configured selection must disable every detector")
+		}
+	}
+	for _, invalid := range []string{"Z", "e", "E P", "E,P"} {
+		if _, err := ParseEnabledFlags(invalid); err == nil {
+			t.Fatalf("accepted invalid selection %q", invalid)
+		}
+	}
+}
+
+func TestRequestFlagsRespectEnabledRules(t *testing.T) {
+	for _, test := range []struct{ requested, enabled, want string }{
+		{"", AllFlagLetters, AllFlagLetters}, {"", "PE", "PE"},
+		{AllFlagLetters, "", ""}, {"E", "P", ""}, {"HPSE", "PE", "PE"},
+	} {
+		requested, _ := ParseFlags(test.requested)
+		enabled, _ := ParseEnabledFlags(test.enabled)
+		want, _ := ParseEnabledFlags(test.want)
+		if got := requested.Intersect(enabled); got != want {
+			t.Errorf("%q intersect %q = %+v, want %+v", test.requested, test.enabled, got, want)
+		}
+	}
+}

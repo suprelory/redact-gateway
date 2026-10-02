@@ -1,4 +1,4 @@
-import type { GatewayEventPage, GatewaySettings, GatewayStats, GatewayStatus, RuleInfo } from './types'
+import type { GatewayEventPage, GatewayRules, GatewaySettings, GatewayStats, GatewayStatus } from './types'
 
 const TOKEN_KEY = 'redact_gateway_admin_token'
 
@@ -46,7 +46,7 @@ export const api = {
     return request<GatewayEventPage>(`/api/v1/events?${query}`)
   },
   stats: (hours = 24) => request<GatewayStats>(`/api/v1/stats?hours=${hours}`),
-	rules: () => request<{ all_flags: string; rules: RuleInfo[] }>('/api/v1/rules'),
+	rules: () => request<GatewayRules>('/api/v1/rules'),
 	settings: (token?: string) => request<GatewaySettings>('/api/v1/settings', token),
 	updateSettings: (settings: Partial<GatewaySettings>, token?: string) => request<GatewaySettings>('/api/v1/settings', token, {
 		method: 'PUT',

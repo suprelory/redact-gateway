@@ -15,6 +15,7 @@ import (
 	"github.com/suprelory/redact-gateway/internal/admin"
 	"github.com/suprelory/redact-gateway/internal/config"
 	"github.com/suprelory/redact-gateway/internal/gateway"
+	"github.com/suprelory/redact-gateway/internal/route"
 	"github.com/suprelory/redact-gateway/internal/store"
 )
 
@@ -64,6 +65,17 @@ func run() error {
 
 	proxy := gateway.NewProxy(cfg, eventStore, logger, version)
 	defer proxy.Close()
+	persistedRules, found, err := eventStore.LoadEnabledRules(context.Background())
+	if err != nil {
+		return err
+	}
+	if found {
+		flags, err := route.ParseEnabledFlags(persistedRules)
+		if err != nil {
+			return fmt.Errorf("persisted enabled rules: %w", err)
+		}
+		proxy.SetEnabledRules(flags)
+	}
 	adminServer := admin.NewServer(cfg.AdminToken, proxy, eventStore)
 	dataHTTP := &http.Server{
 		Addr: cfg.ListenAddr, Handler: proxy,
@@ -79,6 +91,7 @@ func run() error {
 		"version", version, "proxy_addr", cfg.ListenAddr, "admin_addr", cfg.AdminAddr,
 		"data_dir", cfg.DataDir, "allowed_hosts", len(cfg.AllowedHosts),
 		"allow_private_upstreams", cfg.AllowPrivateHosts,
+		"enabled_rules", proxy.EnabledRules().Raw,
 	)
 	if os.Getenv("REDACT_ADMIN_TOKEN") == "" {
 		logger.Info("control plane token", "token", cfg.AdminToken)

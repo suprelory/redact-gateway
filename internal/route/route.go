@@ -69,7 +69,17 @@ func ParseFlags(raw string) (Flags, error) {
 	if raw == "" {
 		raw = AllFlagLetters
 	}
-	flags := Flags{Raw: raw}
+	flags, err := ParseEnabledFlags(raw)
+	if err == nil {
+		flags.Raw = raw
+	}
+	return flags, err
+}
+
+// ParseEnabledFlags parses a configured rule selection. Unlike an empty URL
+// prefix, an empty setting disables every rule.
+func ParseEnabledFlags(raw string) (Flags, error) {
+	flags := Flags{}
 	seen := map[rune]bool{}
 	for _, letter := range raw {
 		if seen[letter] {
@@ -95,5 +105,31 @@ func ParseFlags(raw string) (Flags, error) {
 			return Flags{}, fmt.Errorf("unknown detector flag %q", string(letter))
 		}
 	}
+	flags.Raw = flags.letters()
 	return flags, nil
+}
+
+// Intersect limits a request to the rules enabled by the control plane.
+func (f Flags) Intersect(enabled Flags) Flags {
+	result := Flags{
+		HighEntropy: f.HighEntropy && enabled.HighEntropy,
+		Phone:       f.Phone && enabled.Phone,
+		Secret:      f.Secret && enabled.Secret,
+		Identity:    f.Identity && enabled.Identity,
+		Bank:        f.Bank && enabled.Bank,
+		Email:       f.Email && enabled.Email,
+		Gitleaks:    f.Gitleaks && enabled.Gitleaks,
+	}
+	result.Raw = result.letters()
+	return result
+}
+
+func (f Flags) letters() string {
+	var letters strings.Builder
+	for index, enabled := range [...]bool{f.HighEntropy, f.Phone, f.Secret, f.Identity, f.Bank, f.Email, f.Gitleaks} {
+		if enabled {
+			letters.WriteByte(AllFlagLetters[index])
+		}
+	}
+	return letters.String()
 }

@@ -15,6 +15,7 @@ export interface GatewayStatus {
 export interface GatewaySettings {
   allowed_hosts: string[]
   gateway_url: string
+  enabled_rules: string
 }
 
 export interface GatewayEvent {
@@ -72,4 +73,11 @@ export interface RuleInfo {
   name: string
   description: string
   default: boolean
+  enabled: boolean
+}
+
+export interface GatewayRules {
+  all_flags: string
+  enabled_rules: string
+  rules: RuleInfo[]
 }

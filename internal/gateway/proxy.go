@@ -45,13 +45,16 @@ type Proxy struct {
 	inFlight     atomic.Int64
 	settingsMu   sync.RWMutex
 	allowedHosts []string
+	enabledRules route.Flags
 	sessionCache *redact.SessionCache
 }
 
 func NewProxy(cfg config.Config, eventStore *store.Store, logger *slog.Logger, version string) *Proxy {
+	enabledRules, _ := route.ParseFlags("")
 	proxy := &Proxy{
 		cfg: cfg, store: eventStore, client: newHTTPClient(cfg), logger: logger,
 		startedAt: time.Now(), version: version, allowedHosts: cloneHosts(cfg.AllowedHosts),
+		enabledRules: enabledRules,
 	}
 	if cfg.SessionCacheEnabled {
 		proxy.sessionCache = redact.NewSessionCache(redact.SessionCacheOptions{
@@ -71,6 +74,19 @@ func (p *Proxy) AllowedHosts() []string {
 func (p *Proxy) SetAllowedHosts(hosts []string) {
 	p.settingsMu.Lock()
 	p.allowedHosts = cloneHosts(hosts)
+	p.settingsMu.Unlock()
+}
+
+func (p *Proxy) EnabledRules() route.Flags {
+	p.settingsMu.RLock()
+	defer p.settingsMu.RUnlock()
+	return p.enabledRules
+}
+
+// SetEnabledRules accepts flags validated by route.ParseEnabledFlags.
+func (p *Proxy) SetEnabledRules(flags route.Flags) {
+	p.settingsMu.Lock()
+	p.enabledRules = flags
 	p.settingsMu.Unlock()
 }
 
@@ -112,6 +128,9 @@ func (p *Proxy) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 		writeGatewayError(writer, http.StatusBadRequest, "invalid_route", err.Error(), p.cfg.CORSOrigin)
 		return
 	}
+	// Take one snapshot for detection, numeric checks, and audit metadata. Rule
+	// updates must not change a request that is already being processed.
+	proxyRoute.Flags = proxyRoute.Flags.Intersect(p.EnabledRules())
 	event := store.Event{
 		RequestID: requestID, Timestamp: started.UTC().Format(time.RFC3339Nano), Method: request.Method,
 		UpstreamScheme: proxyRoute.Upstream.Scheme, UpstreamHost: proxyRoute.Upstream.Hostname(),
